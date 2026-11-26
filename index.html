@@ -86,6 +86,7 @@
   .card .stamp, .card .tags, .card .meta { z-index: 3; }
   .card .tags { position: absolute; top: 12px; left: 12px; display: flex; gap: 6px; }
   .card .tag { background: rgba(0,0,0,.65); padding: 3px 8px; border-radius: 6px; font-size: 12px; }
+  .card .tag.fav { color: #ffd34d; }
   .card .tag.warn { background: #6b4a00; color: #ffe08a; }
   .empty { text-align: center; color: var(--muted); padding: 20px; }
   .empty h2 { color: var(--text); margin: 0 0 6px; }
@@ -96,7 +97,10 @@
   .round.del { color: var(--del); border-color: #5a222a; }
   .round.keep { color: var(--keep); border-color: #1d4d37; }
   .round.undo { width: 46px; height: 46px; font-size: 18px; color: var(--muted); }
+  .round.fav { width: 46px; height: 46px; font-size: 20px; color: var(--muted); }
+  .round.fav.on { color: #ffd34d; border-color: #6b5a1d; }
   .round:disabled { opacity: .35; }
+  .round[hidden], #favHint[hidden] { display: none; }
   .hint { flex: none; text-align: center; color: var(--muted); font-size: 12px; padding-bottom: 10px; }
 
   /* ---------- duplicates ---------- */
@@ -192,9 +196,10 @@
   <div class="controls">
     <button class="round del" id="btnDel" title="Bin (←)">✕</button>
     <button class="round undo" id="btnUndo" title="Undo (↓ or Z)">↶</button>
+    <button class="round fav" id="btnFav" title="Favorite in Photos (F)" hidden>★</button>
     <button class="round keep" id="btnKeep" title="Keep (→)">♥</button>
   </div>
-  <div class="hint">← bin · → keep · ↓ undo · Space video sound · Esc home &nbsp;(or drag the card)</div>
+  <div class="hint">← bin · → keep · ↓ undo · <span id="favHint" hidden>F favorite · </span>Space video sound · Esc home &nbsp;(or drag the card)</div>
 </section>
 
 <!-- DUPLICATES -->
@@ -303,6 +308,7 @@ async function load() {
   await flush(); // save anything queued from a previous visit first
   const r = await fetch("/api/photos").then(r => r.json());
   photos = r.photos; state = r.state; platform = r.platform; album = r.album;
+  $("#btnFav").hidden = $("#favHint").hidden = platform !== "mac"; // Windows has no Favorites to write to
   if (platform === "mac") $("#reviewNote").textContent = `Binned photos are added to the “${album}” album in Photos. Open that album, press ⌘A then ⌘⌫ to delete them. They stay in Recently Deleted for 30 days.`;
   $("#loadingAll").remove();
   renderHome(); show("home");
@@ -398,14 +404,15 @@ function makeCard(p, behind) {
   const c = document.createElement("div");
   c.className = "card" + (behind ? " behind" : "");
   const tags = [p.kind === "video" ? `<span class="tag vtag">▶ video · muted</span>` : "",
-    !p.dated ? `<span class="tag warn">⚠ no date</span>` : "", p.local === false ? `<span class="tag warn">not downloaded to this Mac</span>` : "", p.dup ? `<span class="tag">duplicate</span>` : ""].join("");
+    !p.dated ? `<span class="tag warn">⚠ no date</span>` : "", p.local === false ? `<span class="tag warn">not downloaded to this Mac</span>` : "", p.dup ? `<span class="tag">duplicate</span>` : "",
+    p.favorite ? `<span class="tag fav">★ favorite</span>` : ""].join("");
   c.innerHTML = `<div class="loading">Loading from iCloud…</div>
     <div class="stamp keep">KEEP</div><div class="stamp del">BIN</div><div class="tags">${tags}</div>
     <div class="meta"><b>${fmtDate(p)}</b><span>${fmtSize(p.size)}</span><span>${p.name}</span></div>`;
   // Thumbnail placeholder first (Windows gets these from iCloud without downloading the
   // original, so they show up almost immediately), then the full photo.
   let ph = null;
-  if (p.kind === "image" || platform === "windows") {
+  if (p.kind === "image" || platform === "windows" || platform === "mac") {
     ph = new Image(); ph.className = "ph"; ph.draggable = false; ph.src = thumbUrl(p);
     ph.onload = () => c.querySelector(".loading")?.classList.add("over");
     ph.onerror = () => { ph.remove(); ph = null; };
@@ -415,8 +422,14 @@ function makeCard(p, behind) {
   // per site, and full-size downloads from iCloud can take many seconds each, so only the
   // card on top requests the full photo; the server prefetches the rest in the background.
   if (behind) { c.dataset.name = p.key; return c; }
+  if (p.kind === "video" && p.local === false && platform === "mac") { // Mac: only Photos' still preview is on disk
+    const l = c.querySelector(".loading");
+    l.innerHTML = "Video isn't downloaded to this Mac. Showing a still.<br>You can still swipe it.";
+    c.dataset.name = p.key;
+    return c;
+  }
   const m = mediaEl(p, true);
-  if (p.kind === "video" && platform === "windows") m.poster = thumbUrl(p);
+  if (p.kind === "video") m.poster = thumbUrl(p);
   m.addEventListener(p.kind === "video" ? "loadeddata" : "load", () => { c.querySelector(".loading")?.remove(); m.style.display = ""; ph?.remove(); });
   let tries = 0;
   const base = m.src;
@@ -454,6 +467,7 @@ function renderSwipe() {
   btn.disabled = !bin.length; btn.textContent = `Review bin (${bin.length})`;
   $("#saved").textContent = bin.length ? "≈ " + fmtSize(bin.reduce((a, p) => a + p.size, 0)) + " to free" : "";
   $("#btnUndo").disabled = !undoStack.length;
+  $("#btnFav").disabled = !q.length; $("#btnFav").classList.toggle("on", !!q[0]?.favorite);
   if (!q.length) {
     stack.innerHTML = `<div class="card" style="cursor:default"><div class="empty"><h2>${set.name} complete ✓</h2>
       ${bin.length ? `${bin.length} in the bin. Hit <b>Review bin</b> to delete them, or go back home for another set.` : "Press Esc to go back home."}</div></div>`;
@@ -511,6 +525,20 @@ function decide(d) {
     // finished the set? show what was binned in it and ask before deleting anything
     if (!queue().length && binned().some(set.filter)) openReview(set);
   }, 200);
+}
+// Favorite / un-favorite the photo on top, in Photos itself. Doesn't move to the next card.
+async function toggleFav() {
+  if (platform !== "mac" || view !== "swipe" || busy) return;
+  const card = $("#stack .card:not(.behind)"), p = photos.find(x => x.key === card?.dataset.name); if (!p) return;
+  const paint = () => {
+    $("#btnFav").classList.toggle("on", p.favorite);
+    card.querySelector(".tag.fav")?.remove();
+    if (p.favorite) card.querySelector(".tags").insertAdjacentHTML("beforeend", `<span class="tag fav">★ favorite</span>`);
+  };
+  p.favorite = !p.favorite; paint();
+  let ok = false;
+  try { ok = (await fetch("/api/favorite", { method: "POST", body: JSON.stringify({ id: p.id, on: p.favorite }) })).ok; } catch {}
+  if (!ok) { p.favorite = !p.favorite; if (card.isConnected) paint(); toast("Couldn't update Favorites in Photos."); }
 }
 function undo() {
   const name = undoStack.pop(); if (!name) return;
@@ -700,6 +728,7 @@ $("#back").onclick = goHome; $("#dupBack").onclick = goHome;
 $("#btnDel").onclick = () => decide("delete");
 $("#btnKeep").onclick = () => decide("keep");
 $("#btnUndo").onclick = undo;
+$("#btnFav").onclick = toggleFav;
 for (const id of ["#reviewBtn", "#homeBin", "#dupReview"]) $(id).onclick = () => openReview();
 $("#closeReview").onclick = closeReview;
 $("#spareAll").onclick = () => {
@@ -719,6 +748,7 @@ window.addEventListener("keydown", e => {
   if (e.key === "ArrowLeft") { e.preventDefault(); decide("delete"); }
   else if (e.key === "ArrowRight") { e.preventDefault(); decide("keep"); }
   else if (e.key === "ArrowDown" || e.key === "z" || e.key === "Z" || e.key === "Backspace") { e.preventDefault(); undo(); }
+  else if (e.key === "f" || e.key === "F") { e.preventDefault(); toggleFav(); }
   else if (e.key === " ") { e.preventDefault(); const c = $("#stack .card:not(.behind)"), v = c?.querySelector("video"); if (v) toggleSound(v, c); }
 }, true);
 load();

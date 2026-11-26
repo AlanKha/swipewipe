@@ -415,18 +415,24 @@ class MacLibrary:
         return self.db.library_path
 
     def list(self):
-        items, self.paths, self.names = [], {}, {}
+        items, self.paths, self.names, self.thumbs = [], {}, {}, {}
         for p in self.db.photos():
-            if p.intrash:
+            # Shared Album items aren't part of your library: Photos won't let us add
+            # them to an album, so they could never be binned.
+            if p.intrash or p.shared:
                 continue
             name = p.original_filename or p.filename
             ext = os.path.splitext(name)[1].lower()
-            # Prefer the edited version, then the original, then Photos' own preview
-            # (with "Optimize Mac Storage" the original may only be in iCloud).
+            # Photos' own JPEG previews (largest first). With "Optimize Mac Storage" the
+            # original may only be in iCloud, and these are all that's on disk.
+            ders = sorted((d for d in (p.path_derivatives or []) if os.path.exists(d)),
+                          key=os.path.getsize, reverse=True)
+            self.thumbs[p.uuid] = ders[0] if ders else None
+            # Prefer the edited version, then the original, then (photos only) the preview.
+            # A video's preview is a still JPEG, so it can't stand in for the video itself.
             src = p.path_edited or p.path
-            if not src:
-                ders = [d for d in (p.path_derivatives or []) if os.path.exists(d)]
-                src = ders[0] if ders else None
+            if not src and not p.ismovie:
+                src = self.thumbs[p.uuid]
             self.paths[p.uuid] = src
             self.names[p.uuid] = name
             try:
@@ -436,7 +442,7 @@ class MacLibrary:
             items.append({
                 "id": p.uuid, "name": name, "kind": "video" if p.ismovie else "image", "ext": ext,
                 "size": p.original_filesize or 0, "mtime": taken or 0, "taken": taken,
-                "local": bool(src),
+                "local": bool(src), "favorite": bool(p.favorite),
             })
         return finish_items(items)
 
@@ -444,11 +450,25 @@ class MacLibrary:
         p = self.paths.get(pid)
         return p if p and os.path.isfile(p) else None
 
+    def thumb_path(self, pid):
+        p = getattr(self, "thumbs", {}).get(pid)
+        return p if p and os.path.isfile(p) else None
+
     def heic_to_jpeg(self, src, dst, max_px):
         r = subprocess.run(["sips", "-s", "format", "jpeg", "-Z", str(max_px), src, "--out", dst],
                            capture_output=True, timeout=120)
         if r.returncode != 0:
             raise RuntimeError("sips failed: " + r.stderr.decode("utf-8", "replace")[-300:])
+
+    def set_favorite(self, pid, on):
+        """Mark a photo as a Favorite (the heart) in Photos."""
+        if not re.fullmatch(r"[0-9A-Fa-f-]+", pid):
+            return False
+        script = f'tell application "Photos" to set favorite of media item id "{pid}/L0/001" to {"true" if on else "false"}'
+        r = subprocess.run(["osascript", "-e", script], capture_output=True, timeout=60)
+        if r.returncode != 0:
+            print("Photos favorite failed:", r.stderr.decode("utf-8", "replace"))
+        return r.returncode == 0
 
     def remove(self, ids):
         """Photos can't be deleted by script, so add them to an album to delete in Photos."""
@@ -601,10 +621,15 @@ class Handler(BaseHTTPRequestHandler):
 
     def serve_media(self, pid, q):
         path = LIB.path(pid)
+        size = q.get("s", ["full"])[0]
+        # Mac: Photos keeps a JPEG preview even for videos and cloud-only items
+        if size in ("thumb", "ph") and hasattr(LIB, "thumb_path"):
+            t = LIB.thumb_path(pid)
+            if t and (not path or os.path.splitext(path)[1].lower() in VIDEO_EXT):
+                return self.serve_file(t, os.path.splitext(t)[1].lower())
         if not path:
             return self.send_bytes(b"not available on this computer", "text/plain", 404)
         ext = os.path.splitext(path)[1].lower()
-        size = q.get("s", ["full"])[0]
         # s=ph: card placeholder - only if the shell already has a thumbnail; never download for it
         # s=thumb: grid tile - fall back to building one from the photo if needed
         if size == "ph" and not hasattr(LIB, "shell_thumb"):
@@ -702,6 +727,10 @@ class Handler(BaseHTTPRequestHandler):
                     changes[key] = d if d in ("keep", "delete") else None
             PROGRESS.update(changes)
             return self.send_json({"ok": True})
+        if u.path == "/api/favorite":
+            pid = body.get("id")
+            ok = isinstance(pid, str) and hasattr(LIB, "set_favorite") and LIB.set_favorite(pid, bool(body.get("on")))
+            return self.send_json({"ok": bool(ok)}, 200 if ok else 500)
         if u.path == "/api/prefetch":
             ids = [i for i in body.get("ids", []) if isinstance(i, str)][:50]
             PREFETCH.want(ids)

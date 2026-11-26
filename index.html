@@ -312,9 +312,27 @@ function makeCard(p, behind) {
     <div class="stamp keep">KEEP</div><div class="stamp del">BIN</div><div class="tags">${tags}</div>
     <div class="meta"><b>${fmtDate(p)}</b><span>${fmtSize(p.size)}</span><span>${p.name}</span></div>`;
   const m = mediaEl(p, true);
-  m.addEventListener(p.kind === "video" ? "loadeddata" : "load", () => c.querySelector(".loading")?.remove());
-  m.addEventListener("error", () => { const l = c.querySelector(".loading");
-    if (l) { l.className = "err"; l.textContent = p.kind === "video" ? "Can't preview this video format in the browser" : "Couldn't load this file"; } });
+  m.addEventListener(p.kind === "video" ? "loadeddata" : "load", () => { c.querySelector(".loading")?.remove(); m.style.display = ""; });
+  let tries = 0;
+  const base = m.src;
+  m.addEventListener("error", async () => {
+    const l = c.querySelector(".loading"); if (!l) return;
+    if (p.kind === "image" && tries < 2) { // the server already retries; give iCloud a little longer
+      tries++; l.textContent = "Still downloading from iCloud…";
+      setTimeout(() => { m.src = base + (base.includes("?") ? "&" : "?") + "r=" + tries; }, 2000);
+      return;
+    }
+    m.style.display = "none";
+    let why = "";
+    try { const r = await fetch(base); if (!r.ok) why = await r.text(); } catch { why = "SwipeWipe isn't running. Start it again."; }
+    l.className = "err";
+    l.innerHTML = p.kind === "video" && !why ? "Can't preview this video format in the browser.<br>You can still swipe it."
+      : `Couldn't load this file from iCloud.<br><small style="opacity:.7">${(why || "").replace(/</g, "&lt;").slice(0, 200)}</small><br><br>
+         <button class="btn retry">Retry</button>`;
+    const b = l.querySelector(".retry");
+    if (b) b.onclick = e => { e.stopPropagation(); tries = 0; l.className = "loading"; l.textContent = "Loading from iCloud…";
+      m.style.display = ""; m.src = base + (base.includes("?") ? "&" : "?") + "r=" + Date.now(); };
+  });
   c.prepend(m);
   c.dataset.name = p.key;
   return c;
@@ -340,7 +358,7 @@ function renderSwipe() {
 function attachDrag(card) {
   let sx = 0, sy = 0, dx = 0, dragging = false;
   const sk = card.querySelector(".stamp.keep"), sd = card.querySelector(".stamp.del");
-  card.addEventListener("pointerdown", e => { dragging = true; sx = e.clientX; sy = e.clientY; dx = 0;
+  card.addEventListener("pointerdown", e => { if (e.target.closest("button")) return; dragging = true; sx = e.clientX; sy = e.clientY; dx = 0;
     card.setPointerCapture(e.pointerId); card.classList.add("dragging"); card.style.transition = "none"; });
   card.addEventListener("pointermove", e => { if (!dragging) return;
     dx = e.clientX - sx; card.style.transform = `translate(${dx}px, ${(e.clientY - sy) * .3}px) rotate(${dx / 18}deg)`;

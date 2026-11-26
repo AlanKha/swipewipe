@@ -20,6 +20,7 @@ import re
 import subprocess
 import sys
 import threading
+import time
 import webbrowser
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -381,22 +382,32 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_bytes(b"not available on this computer", "text/plain", 404)
         ext = os.path.splitext(path)[1].lower()
         size = q.get("s", ["full"])[0]
-        try:
-            if ext in IMAGE_EXT and (size == "thumb" or ext not in RAW_OK) and (HAVE_PIL or IS_MAC or ext in (".heic", ".heif")):
-                data = rendered(path, 420 if size == "thumb" else 1800)
-                return self.send_bytes(data, "image/jpeg", extra={"Cache-Control": "max-age=86400"})
-            return self.serve_file(path, ext)
-        except (ConnectionError, BrokenPipeError):
-            pass
-        except Exception as e:  # unreadable/corrupt file
+        convert = ext in IMAGE_EXT and (size == "thumb" or ext not in RAW_OK) and (HAVE_PIL or IS_MAC or ext in (".heic", ".heif"))
+        last = None
+        # Cloud-only files download on first read, and that download sometimes fails when
+        # iCloud is busy. Retry a few times before giving up.
+        for attempt in range(4):
             try:
-                self.send_bytes(str(e).encode(), "text/plain", 500)
-            except Exception:
-                pass
+                if convert:
+                    data = rendered(path, 420 if size == "thumb" else 1800)
+                    return self.send_bytes(data, "image/jpeg", extra={"Cache-Control": "max-age=86400"})
+                return self.serve_file(path, ext)
+            except (ConnectionError, BrokenPipeError):
+                return
+            except Exception as e:
+                last = e
+                time.sleep(1.5 * (attempt + 1))
+        print(f"Couldn't load {pid}: {last}")
+        try:
+            self.send_bytes(f"{type(last).__name__}: {last}".encode(), "text/plain", 500)
+        except Exception:
+            pass
 
     def serve_file(self, path, ext):
         ctype = {".mov": "video/mp4"}.get(ext) or mimetypes.guess_type(path)[0] or "application/octet-stream"
         total = os.path.getsize(path)
+        with open(path, "rb") as f:  # make iCloud fetch it now, while we can still retry
+            f.read(1)
         start, end, status = 0, total - 1, 200
         rng = self.headers.get("Range")
         if rng and rng.startswith("bytes="):

@@ -1,0 +1,8 @@
+# personal data - never commit
+progress.json
+state.json
+dates.json
+*.tmp
+.cache/
+__pycache__/
+.DS_Store

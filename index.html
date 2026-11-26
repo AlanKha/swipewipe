@@ -1,0 +1,473 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SwipeWipe</title>
+<style>
+  :root {
+    --peach: #f0cbb2; --peach2: #e6b99c; --ink: #17130f;
+    --bg: #0f0f12; --panel: #1a1a1f; --line: #2a2a31; --text: #ededf0; --muted: #8b8b96;
+    --del: #ff4d5e; --keep: #2fd18b; --accent: #7c8cff;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; font: 14px/1.4 "Segoe UI Variable", "Segoe UI", system-ui, sans-serif; user-select: none; }
+  body { background: var(--peach); color: var(--ink); }
+  button { font: inherit; cursor: pointer; }
+  .view { display: none; height: 100%; }
+  .view.on { display: flex; flex-direction: column; }
+
+  /* ---------- home ---------- */
+  #home { overflow: auto; }
+  .homehead { display: flex; align-items: center; gap: 14px; padding: 22px 28px 16px; flex-wrap: wrap; }
+  .logo { font-size: 40px; font-weight: 900; font-style: italic; letter-spacing: -1.5px; margin: 0; }
+  .homehead .spacer { flex: 1; }
+  .pill { background: var(--peach2); border: 0; border-radius: 999px; padding: 10px 16px; font-weight: 700; color: var(--ink); }
+  .pill.bin { background: var(--ink); color: #fff; }
+  .pill:disabled { opacity: .45; cursor: default; }
+  .totals { padding: 0 28px 16px; font-weight: 600; color: #5b4636; display: flex; gap: 18px; flex-wrap: wrap; }
+  .totals .bar { flex-basis: 100%; height: 8px; background: rgba(0,0,0,.1); border-radius: 99px; overflow: hidden; }
+  .totals .bar div { height: 100%; background: var(--ink); border-radius: 99px; }
+
+  .band { position: relative; display: flex; align-items: center; gap: 16px; min-height: 112px; padding: 0 28px;
+    color: #fff; cursor: pointer; overflow: hidden; border: 0; width: 100%; text-align: left; }
+  .band:hover .name { transform: translateX(4px); }
+  .band:focus-visible { outline: 4px solid var(--ink); outline-offset: -4px; }
+  .band .name { font-size: clamp(34px, 6vw, 58px); font-weight: 800; letter-spacing: -1.5px; line-height: 1; transition: transform .15s; }
+  .band.month .name { font-weight: 900; letter-spacing: -1px; }
+  .band .info { margin-left: auto; text-align: right; font-weight: 700; font-size: 15px; opacity: .92; }
+  .band .info small { display: block; font-weight: 600; font-size: 12px; opacity: .8; }
+  .band .prog { position: absolute; left: 0; bottom: 0; height: 6px; background: rgba(255,255,255,.75); }
+  .band .badge { background: #ea4335; color: #fff; border-radius: 99px; padding: 2px 10px; font-size: 15px; font-weight: 700; }
+  .band.dark { color: var(--ink); }
+  .band.dark .prog { background: rgba(0,0,0,.45); }
+  .band.done { filter: saturate(.35) brightness(1.05); }
+  .band.done .name::after { content: " ✓"; }
+  .band .mark { border: 2px solid currentColor; background: transparent; color: inherit; border-radius: 99px;
+    padding: 4px 12px; font-weight: 700; font-size: 12px; opacity: 0; transition: opacity .15s; }
+  .band:hover .mark, .band .mark:focus-visible { opacity: .9; }
+  .sectionlbl { padding: 18px 28px 8px; font-weight: 800; font-size: 12px; letter-spacing: 1.5px; text-transform: uppercase; color: #6d5443; }
+
+  /* ---------- swipe ---------- */
+  #swipe, #dups, #review { background: var(--bg); color: var(--text); }
+  .topbar { display: flex; align-items: center; gap: 12px; padding: 12px 18px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  .topbar h2 { font-size: 18px; margin: 0; }
+  .topbar .spacer { flex: 1; }
+  .btn { color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 6px 12px; }
+  .btn:focus-visible { outline: 2px solid var(--accent); }
+  .btn.red { border-color: var(--del); background: #3a1418; color: #fff; }
+  .btn.red:disabled { opacity: .4; cursor: default; background: var(--panel); border-color: var(--line); }
+  .btn.solid { background: var(--del); border-color: var(--del); color: #fff; font-weight: 600; }
+  .stat { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .pbar { height: 3px; background: var(--line); flex: none; }
+  .pbar > div { height: 100%; width: 0; background: var(--accent); transition: width .25s; }
+  .stage { flex: 1; min-height: 0; display: grid; place-items: center; padding: 16px; }
+  #stack { position: relative; width: min(92vw, 720px); height: 100%; }
+  .card { position: absolute; inset: 0; border-radius: 18px; overflow: hidden; background: var(--panel);
+    box-shadow: 0 12px 40px rgba(0,0,0,.45); touch-action: none; cursor: grab; display: grid; place-items: center; }
+  .card.behind { transform: scale(.95) translateY(14px); opacity: .55; pointer-events: none; }
+  .card.dragging { cursor: grabbing; }
+  .card img, .card video { max-width: 100%; max-height: 100%; object-fit: contain; pointer-events: none; display: block; }
+  .card .meta { position: absolute; left: 0; right: 0; bottom: 0; padding: 26px 16px 12px;
+    background: linear-gradient(transparent, rgba(0,0,0,.75)); font-size: 12.5px; color: #d0d0d8; display: flex; gap: 10px; flex-wrap: wrap; }
+  .card .meta b { color: #fff; font-weight: 600; }
+  .card .stamp { position: absolute; top: 28px; padding: 6px 14px; border: 3px solid; border-radius: 10px;
+    font-weight: 800; font-size: 26px; letter-spacing: 2px; opacity: 0; }
+  .card .stamp.del { right: 26px; color: var(--del); transform: rotate(12deg); }
+  .card .stamp.keep { left: 26px; color: var(--keep); transform: rotate(-12deg); }
+  .card .loading, .card .err { color: var(--muted); padding: 20px; text-align: center; }
+  .card .tags { position: absolute; top: 12px; left: 12px; display: flex; gap: 6px; }
+  .card .tag { background: rgba(0,0,0,.65); padding: 3px 8px; border-radius: 6px; font-size: 12px; }
+  .card .tag.warn { background: #6b4a00; color: #ffe08a; }
+  .empty { text-align: center; color: var(--muted); padding: 20px; }
+  .empty h2 { color: var(--text); margin: 0 0 6px; }
+  .controls { flex: none; display: flex; justify-content: center; align-items: center; gap: 22px; padding: 4px 0 8px; }
+  .round { width: 62px; height: 62px; border-radius: 50%; display: grid; place-items: center; font-size: 26px;
+    border: 2px solid var(--line); background: var(--panel); color: var(--text); transition: transform .1s; }
+  .round:active { transform: scale(.92); }
+  .round.del { color: var(--del); border-color: #5a222a; }
+  .round.keep { color: var(--keep); border-color: #1d4d37; }
+  .round.undo { width: 46px; height: 46px; font-size: 18px; color: var(--muted); }
+  .round:disabled { opacity: .35; }
+  .hint { flex: none; text-align: center; color: var(--muted); font-size: 12px; padding-bottom: 10px; }
+
+  /* ---------- duplicates ---------- */
+  .warnbox { margin: 14px 18px 0; padding: 12px 14px; border-radius: 10px; background: #2b2410; border: 1px solid #5c4a14; color: #f1dc9a; font-size: 13px; }
+  #dupList { flex: 1; overflow: auto; padding: 14px 18px 30px; display: grid; gap: 12px;
+    grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); align-content: start; }
+  .group { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 10px; }
+  .group.resolved { opacity: .5; }
+  .group .row { display: flex; gap: 8px; }
+  .group .gmeta { font-size: 12px; color: var(--muted); margin-bottom: 8px; display: flex; justify-content: space-between; }
+  .dtile { position: relative; flex: 1; aspect-ratio: 1; border-radius: 8px; overflow: hidden; background: #111;
+    cursor: pointer; border: 3px solid transparent; }
+  .dtile img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .dtile .vid { display: grid; place-items: center; height: 100%; color: var(--muted); font-size: 12px; }
+  .dtile .lbl { position: absolute; left: 6px; right: 6px; bottom: 6px; font-size: 11px; background: rgba(0,0,0,.7);
+    padding: 2px 6px; border-radius: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .dtile .st { position: absolute; top: 6px; right: 6px; font-size: 11px; font-weight: 700; padding: 2px 7px; border-radius: 5px; }
+  .dtile.keep { border-color: var(--keep); } .dtile.keep .st { background: var(--keep); color: #062; }
+  .dtile.delete { border-color: var(--del); } .dtile.delete .st { background: var(--del); color: #fff; }
+  .dtile.none .st { background: #333; color: #ccc; }
+
+  /* ---------- review ---------- */
+  #grid { flex: 1; overflow: auto; padding: 16px; display: grid; gap: 10px;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); align-content: start; }
+  .tile { position: relative; aspect-ratio: 1; border-radius: 10px; overflow: hidden; background: var(--panel);
+    cursor: pointer; border: 2px solid var(--del); }
+  .tile img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .tile.spared { border-color: var(--line); opacity: .4; }
+  .tile .x { position: absolute; top: 6px; right: 6px; background: var(--del); color: #fff; width: 22px; height: 22px;
+    border-radius: 50%; display: grid; place-items: center; font-size: 13px; font-weight: 700; }
+  .tile.spared .x { background: var(--keep); }
+  .tile .vid { display: grid; place-items: center; height: 100%; color: var(--muted); font-size: 12px; padding: 8px; text-align: center; word-break: break-all; }
+  .tile .warn { position: absolute; left: 6px; top: 6px; background: #6b4a00; color: #ffe08a; font-size: 11px; padding: 1px 6px; border-radius: 5px; }
+  .note { color: var(--muted); font-size: 12.5px; padding: 10px 18px 0; }
+  #toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); background: #26262d; color: #fff; border: 1px solid var(--line);
+    padding: 10px 16px; border-radius: 10px; display: none; z-index: 20; }
+  #loadingAll { display: grid; place-items: center; height: 100%; font-weight: 700; font-size: 18px; }
+</style>
+</head>
+<body>
+<div id="loadingAll">Reading your photo library…</div>
+
+<!-- HOME -->
+<section class="view" id="home">
+  <div class="homehead">
+    <h1 class="logo">swipewipe</h1>
+    <span class="spacer"></span>
+    <button class="pill bin" id="homeBin" disabled>Review bin</button>
+  </div>
+  <div class="totals" id="totals"></div>
+  <div id="bands"></div>
+</section>
+
+<!-- SWIPE -->
+<section class="view" id="swipe">
+  <div class="topbar">
+    <button class="btn" id="back" title="Back (Esc)">← Home</button>
+    <h2 id="swTitle"></h2>
+    <span class="stat" id="count"></span>
+    <span class="spacer"></span>
+    <span class="stat" id="saved"></span>
+    <button class="btn red" id="reviewBtn" disabled>Review bin (0)</button>
+  </div>
+  <div class="pbar"><div id="progress"></div></div>
+  <div class="stage"><div id="stack"></div></div>
+  <div class="controls">
+    <button class="round del" id="btnDel" title="Bin (←)">✕</button>
+    <button class="round undo" id="btnUndo" title="Undo (Z)">↶</button>
+    <button class="round keep" id="btnKeep" title="Keep (→)">♥</button>
+  </div>
+  <div class="hint">← bin · → keep · Z undo · Space video sound · Esc home &nbsp;(or drag the card)</div>
+</section>
+
+<!-- DUPLICATES -->
+<section class="view" id="dups">
+  <div class="topbar">
+    <button class="btn" id="dupBack">← Home</button>
+    <h2>Duplicates</h2>
+    <span class="stat" id="dupStat"></span>
+    <span class="spacer"></span>
+    <button class="btn" id="dupAuto">Bin the extra copy in every unresolved group</button>
+    <button class="btn red" id="dupReview" disabled>Review bin (0)</button>
+  </div>
+  <div class="warnbox">Matched by identical file size and date taken. Click a copy to switch it between keep and bin.
+    <b>Check on your iPhone before deleting lots of these:</b> open Photos → Utilities → Duplicates. If your iPhone shows no duplicates,
+    these copies may be two local files for the <i>same</i> iCloud photo, and deleting one could delete the photo itself. Try one pair first.</div>
+  <div id="dupList"></div>
+</section>
+
+<!-- REVIEW -->
+<section class="view" id="review">
+  <div class="topbar">
+    <button class="btn" id="closeReview">← Back</button>
+    <h2 id="reviewTitle">Review bin</h2>
+    <span class="stat">Click a photo to spare it</span>
+    <span class="spacer"></span>
+    <button class="btn solid" id="confirmDel">Delete</button>
+  </div>
+  <div class="note" id="reviewNote">Files go to the Windows Recycle Bin, and iCloud syncs the deletion to your other devices.
+    They stay in iCloud's “Recently Deleted” album for 30 days.</div>
+  <div id="grid"></div>
+</section>
+<div id="toast"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+const enc = encodeURIComponent;
+let photos = [], state = {};
+let view = "home", set = null, order = [], undoStack = [], front = null, busy = false, cameFrom = "home";
+
+const fmtSize = b => b > 1e9 ? (b / 1e9).toFixed(1) + " GB" : b > 1e6 ? (b / 1e6).toFixed(1) + " MB" : Math.round(b / 1e3) + " KB";
+const fmtDate = p => p.dated ? new Date(p.mtime * 1000).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" }) : "No date";
+const monthName = m => { const [y, mo] = m.split("-"); return new Date(+y, +mo - 1).toLocaleDateString("en", { month: "short" }).toUpperCase() + " ’" + y.slice(2); };
+const post = (key, decision) => fetch("/api/decide", { method: "POST", body: JSON.stringify({ key, decision }) });
+let platform = "windows", album = "";
+const binned = () => photos.filter(p => state[p.key] === "delete");
+function toast(msg, ms = 2600) { const t = $("#toast"); t.textContent = msg; t.style.display = "block"; clearTimeout(toast.h); toast.h = setTimeout(() => t.style.display = "none", ms); }
+function show(v) { view = v; document.querySelectorAll(".view").forEach(s => s.classList.toggle("on", s.id === v)); }
+
+async function load() {
+  const r = await fetch("/api/photos").then(r => r.json());
+  photos = r.photos; state = r.state; platform = r.platform; album = r.album;
+  if (platform === "mac") $("#reviewNote").textContent = `Binned photos are added to the “${album}” album in Photos. Open that album, press ⌘A then ⌘⌫ to delete them. They stay in Recently Deleted for 30 days.`;
+  $("#loadingAll").remove();
+  renderHome(); show("home");
+}
+
+// ---------- sets ----------
+const MONTH_COLORS = [["#e0995a", 1], ["#eed36f", 1], ["#6a94ea", 1], ["#df3328", 0], ["#8ff09a", 1], ["#b06df0", 0], ["#f06d9a", 0], ["#4fc7c0", 1], ["#ff8a3d", 1], ["#2d6a4f", 0], ["#c9b6ff", 1], ["#3a3a8c", 0]];
+function sets() {
+  const now = Date.now() / 1000, out = [];
+  out.push({ id: "recents", name: "recents", bg: "linear-gradient(90deg,#5fd89a,#3592c4 55%,#2433c8)", filter: p => p.dated && now - p.mtime < 30 * 86400, badge: true });
+  out.push({ id: "random", name: "random", bg: "linear-gradient(90deg,#8a22d8,#9b8ae8 55%,#94c0f6)", filter: () => true, shuffle: true, noDone: true });
+  out.push({ id: "dups", name: "duplicates", bg: "linear-gradient(90deg,#d22e55,#e3a06a 55%,#e8e773)", filter: p => p.dup, special: "dups" });
+  out.push({ id: "undated", name: "no date", bg: "repeating-linear-gradient(135deg,#55504a 0 22px,#4a4540 22px 44px)", filter: p => !p.dated,
+    sub: "Date unknown, so these aren't in any month. Look closely before binning." });
+  const months = [...new Set(photos.filter(p => p.dated).map(p => p.month))].sort().reverse();
+  months.forEach((m, i) => { const [c, dark] = MONTH_COLORS[i % MONTH_COLORS.length];
+    out.push({ id: m, name: monthName(m), bg: c, dark, month: true, filter: p => p.month === m }); });
+  return out;
+}
+function stats(s) {
+  const all = photos.filter(s.filter), left = all.filter(p => !state[p.key]).length;
+  const marked = !!state["@done:" + s.id];
+  return { total: all.length, left, done: !s.noDone && all.length > 0 && (left === 0 || marked), marked };
+}
+
+// ---------- home ----------
+function renderHome() {
+  const total = photos.length, reviewed = photos.filter(p => state[p.key]).length, bin = binned();
+  const all = sets(), months = all.filter(s => s.month), monthsDone = months.filter(s => stats(s).done).length;
+  $("#totals").innerHTML = `<span>${reviewed.toLocaleString()} of ${total.toLocaleString()} reviewed</span>
+    <span>${monthsDone} / ${months.length} months complete</span>
+    ${bin.length ? `<span>${bin.length} in bin · ≈ ${fmtSize(bin.reduce((a, p) => a + p.size, 0))} to free</span>` : ""}
+    <div class="bar"><div style="width:${total ? reviewed / total * 100 : 0}%"></div></div>`;
+  const hb = $("#homeBin"); hb.disabled = !bin.length; hb.textContent = bin.length ? `Review bin (${bin.length})` : "Bin is empty";
+  const wrap = $("#bands"); wrap.innerHTML = "";
+  all.forEach((s, i) => {
+    if (s.month && !all[i - 1]?.month) wrap.insertAdjacentHTML("beforeend", `<div class="sectionlbl">By month</div>`);
+    const st = stats(s);
+    if (s.special === "dups") { const g = dupGroups(); st.total = g.length; st.left = g.filter(x => !x.resolved).length; st.done = g.length > 0 && st.left === 0; }
+    if (!st.total && s.id !== "recents") return;
+    const b = document.createElement("button");
+    b.className = "band" + (s.month ? " month" : "") + (s.dark ? " dark" : "") + (st.done ? " done" : "");
+    b.style.background = s.bg;
+    const unit = s.special === "dups" ? "groups" : "left";
+    let info = s.noDone ? `${st.left.toLocaleString()} unreviewed` : st.done ? (st.left ? `marked done · ${st.left} unswiped` : "complete") : `${st.left.toLocaleString()} ${unit}`;
+    if (s.special !== "dups" && !s.noDone) info += `<small>of ${st.total.toLocaleString()}</small>`;
+    if (s.sub) info = `${info}<small>${s.sub}</small>`;
+    const badge = s.badge && st.left ? `<span class="badge">${st.left}</span>` : "";
+    const mark = s.month ? `<span class="mark" role="button" tabindex="0" data-mark="${s.id}">${st.marked ? "unmark" : "mark done"}</span>` : "";
+    b.innerHTML = `<span class="name">${s.name}</span>${mark}<span class="info">${s.badge ? badge || "all caught up" : info}</span>
+      ${s.noDone ? "" : `<span class="prog" style="width:${st.total ? (st.total - st.left) / st.total * 100 : 0}%"></span>`}`;
+    b.onclick = e => {
+      const m = e.target.closest("[data-mark]");
+      if (m) { e.stopPropagation(); toggleMark(m.dataset.mark); return; }
+      s.special === "dups" ? openDups() : openSet(s);
+    };
+    wrap.append(b);
+  });
+}
+function toggleMark(id) {
+  const k = "@done:" + id, on = !state[k];
+  if (on) state[k] = "1"; else delete state[k];
+  post(k, on ? "1" : "0");
+  renderHome();
+}
+
+// ---------- swipe ----------
+function openSet(s) {
+  set = s; undoStack = []; front = null;
+  order = photos.filter(s.filter);
+  if (s.shuffle) for (let i = order.length - 1; i > 0; i--) { const j = Math.random() * (i + 1) | 0; [order[i], order[j]] = [order[j], order[i]]; }
+  $("#swTitle").textContent = s.name;
+  show("swipe"); renderSwipe();
+}
+function queue() {
+  const q = order.filter(p => !state[p.key] && photos.includes(p));
+  const i = q.findIndex(p => p.key === front);
+  if (i > 0) q.unshift(q.splice(i, 1)[0]);
+  return q;
+}
+function mediaEl(p, full = true) {
+  if (p.kind === "video") {
+    const v = document.createElement("video");
+    v.src = "/media/" + enc(p.id); v.muted = true; v.loop = true; v.autoplay = full; v.playsInline = true; v.preload = full ? "auto" : "metadata";
+    return v;
+  }
+  const i = new Image(); i.decoding = "async"; i.draggable = false; if (!full) i.loading = "lazy";
+  i.src = "/media/" + enc(p.id) + (full ? "" : "?s=thumb");
+  return i;
+}
+function makeCard(p, behind) {
+  const c = document.createElement("div");
+  c.className = "card" + (behind ? " behind" : "");
+  const tags = [p.kind === "video" ? `<span class="tag vtag">▶ video · muted</span>` : "",
+    !p.dated ? `<span class="tag warn">⚠ no date</span>` : "", p.local === false ? `<span class="tag warn">not downloaded to this Mac</span>` : "", p.dup ? `<span class="tag">duplicate</span>` : ""].join("");
+  c.innerHTML = `<div class="loading">Loading from iCloud…</div>
+    <div class="stamp keep">KEEP</div><div class="stamp del">BIN</div><div class="tags">${tags}</div>
+    <div class="meta"><b>${fmtDate(p)}</b><span>${fmtSize(p.size)}</span><span>${p.name}</span></div>`;
+  const m = mediaEl(p, true);
+  m.addEventListener(p.kind === "video" ? "loadeddata" : "load", () => c.querySelector(".loading")?.remove());
+  m.addEventListener("error", () => { const l = c.querySelector(".loading");
+    if (l) { l.className = "err"; l.textContent = p.kind === "video" ? "Can't preview this video format in the browser" : "Couldn't load this file"; } });
+  c.prepend(m);
+  c.dataset.name = p.key;
+  return c;
+}
+function renderSwipe() {
+  const stack = $("#stack"); stack.innerHTML = "";
+  const q = queue(), done = order.length - q.length;
+  $("#count").textContent = q.length ? `${done + 1} / ${order.length}` : `${order.length} / ${order.length}`;
+  $("#progress").style.width = order.length ? (done / order.length * 100) + "%" : "0";
+  const bin = binned(), btn = $("#reviewBtn");
+  btn.disabled = !bin.length; btn.textContent = `Review bin (${bin.length})`;
+  $("#saved").textContent = bin.length ? "≈ " + fmtSize(bin.reduce((a, p) => a + p.size, 0)) + " to free" : "";
+  $("#btnUndo").disabled = !undoStack.length;
+  if (!q.length) {
+    stack.innerHTML = `<div class="card" style="cursor:default"><div class="empty"><h2>${set.name} complete ✓</h2>
+      ${bin.length ? `${bin.length} in the bin. Hit <b>Review bin</b> to delete them, or go back home for another set.` : "Press Esc to go back home."}</div></div>`;
+    return;
+  }
+  if (q[1]) stack.append(makeCard(q[1], true));
+  const top = makeCard(q[0], false); stack.append(top); attachDrag(top);
+  for (const p of q.slice(2, 4)) if (p.kind === "image") mediaEl(p, true); // preload
+}
+function attachDrag(card) {
+  let sx = 0, sy = 0, dx = 0, dragging = false;
+  const sk = card.querySelector(".stamp.keep"), sd = card.querySelector(".stamp.del");
+  card.addEventListener("pointerdown", e => { dragging = true; sx = e.clientX; sy = e.clientY; dx = 0;
+    card.setPointerCapture(e.pointerId); card.classList.add("dragging"); card.style.transition = "none"; });
+  card.addEventListener("pointermove", e => { if (!dragging) return;
+    dx = e.clientX - sx; card.style.transform = `translate(${dx}px, ${(e.clientY - sy) * .3}px) rotate(${dx / 18}deg)`;
+    sk.style.opacity = Math.max(0, Math.min(1, dx / 120)); sd.style.opacity = Math.max(0, Math.min(1, -dx / 120)); });
+  const end = () => { if (!dragging) return; dragging = false; card.classList.remove("dragging");
+    if (Math.abs(dx) > 110) return decide(dx > 0 ? "keep" : "delete");
+    if (Math.abs(dx) < 5) { const v = card.querySelector("video"); if (v) toggleSound(v, card); }
+    card.style.transition = "transform .25s"; card.style.transform = ""; sk.style.opacity = sd.style.opacity = 0; };
+  card.addEventListener("pointerup", end); card.addEventListener("pointercancel", end);
+}
+function toggleSound(v, card) { v.muted = !v.muted; const t = card.querySelector(".vtag"); if (t) t.textContent = "▶ video · " + (v.muted ? "muted" : "sound on"); }
+function decide(d) {
+  if (busy || view !== "swipe") return;
+  const card = $("#stack .card:not(.behind)"), name = card?.dataset.name; if (!name) return;
+  busy = true;
+  card.style.transition = "transform .3s ease-out, opacity .3s";
+  card.style.transform = `translate(${d === "keep" ? 900 : -900}px, 40px) rotate(${d === "keep" ? 30 : -30}deg)`;
+  card.style.opacity = 0;
+  card.querySelector(d === "keep" ? ".stamp.keep" : ".stamp.del").style.opacity = 1;
+  state[name] = d; undoStack.push(name); front = null; post(name, d);
+  setTimeout(() => { busy = false; renderSwipe(); }, 200);
+}
+function undo() {
+  const name = undoStack.pop(); if (!name) return;
+  delete state[name]; post(name, null); front = name; renderSwipe();
+}
+
+// ---------- duplicates ----------
+function dupGroups() {
+  const m = new Map();
+  for (const p of photos) if (p.dup) { if (!m.has(p.dup)) m.set(p.dup, []); m.get(p.dup).push(p); }
+  return [...m.values()].filter(g => g.length > 1).map(g => {
+    // suggested keeper: the name without a "(1)" style suffix, else the first
+    g.sort((a, b) => /\(\d+\)\.[^.]+$/.test(a.name) - /\(\d+\)\.[^.]+$/.test(b.name) || a.name.localeCompare(b.name));
+    return { items: g, resolved: g.every(p => state[p.key]) };
+  }).sort((a, b) => a.resolved - b.resolved || b.items[0].mtime - a.items[0].mtime);
+}
+function openDups() { show("dups"); renderDups(); }
+function renderDups() {
+  const gs = dupGroups(), unresolved = gs.filter(g => !g.resolved).length;
+  $("#dupStat").textContent = `${unresolved} unresolved of ${gs.length} groups`;
+  $("#dupAuto").disabled = !unresolved;
+  const bin = binned(), rb = $("#dupReview"); rb.disabled = !bin.length; rb.textContent = `Review bin (${bin.length})`;
+  const list = $("#dupList"); list.innerHTML = "";
+  for (const g of gs) {
+    const el = document.createElement("div"); el.className = "group" + (g.resolved ? " resolved" : "");
+    el.innerHTML = `<div class="gmeta"><span>${fmtDate(g.items[0])} · ${fmtSize(g.items[0].size)}</span><span>${g.items.length} copies</span></div><div class="row"></div>`;
+    for (const p of g.items) {
+      const st = state[p.key] || "none";
+      const t = document.createElement("div"); t.className = "dtile " + st; t.title = p.name;
+      if (p.kind === "video") t.innerHTML = `<div class="vid">▶ video</div>`; else t.append(mediaEl(p, false));
+      t.insertAdjacentHTML("beforeend", `<span class="st">${st === "keep" ? "KEEP" : st === "delete" ? "BIN" : "?"}</span><span class="lbl">${p.name}</span>`);
+      t.onclick = () => { const next = state[p.key] === "delete" ? "keep" : "delete"; state[p.key] = next; post(p.key, next); renderDups(); };
+      el.querySelector(".row").append(t);
+    }
+    list.append(el);
+  }
+}
+$("#dupAuto").onclick = () => {
+  const gs = dupGroups().filter(g => !g.resolved);
+  if (!confirm(`Mark the extra copy in ${gs.length} groups for the bin (keeping the copy without "(1)" in its name)?\n\nNothing is deleted until you confirm in Review bin.`)) return;
+  for (const g of gs) g.items.forEach((p, i) => { if (!state[p.key]) { state[p.key] = i === 0 ? "keep" : "delete"; post(p.key, state[p.key]); } });
+  renderDups();
+};
+
+// ---------- review ----------
+let spared = new Set();
+function openReview() {
+  cameFrom = view; spared = new Set();
+  const g = $("#grid"); g.innerHTML = "";
+  for (const p of binned()) {
+    const t = document.createElement("div"); t.className = "tile"; t.title = p.name;
+    if (p.kind === "video") t.innerHTML = `<div class="vid">▶ video<br>${p.name}</div>`; else t.append(mediaEl(p, false));
+    t.insertAdjacentHTML("beforeend", `${p.dated ? "" : `<span class="warn">no date</span>`}<div class="x">✕</div>`);
+    t.onclick = () => { spared.has(p.key) ? spared.delete(p.key) : spared.add(p.key);
+      t.classList.toggle("spared"); t.querySelector(".x").textContent = spared.has(p.key) ? "♥" : "✕"; updateReview(); };
+    g.append(t);
+  }
+  updateReview(); show("review");
+}
+function updateReview() {
+  const n = binned().filter(p => !spared.has(p.key)).length;
+  $("#reviewTitle").textContent = `Review bin: ${n} to delete`;
+  const b = $("#confirmDel"); b.textContent = `Delete ${n}`; b.disabled = !n;
+}
+function closeReview() {
+  for (const name of spared) { state[name] = "keep"; post(name, "keep"); }
+  spared = new Set();
+  show(cameFrom);
+  if (cameFrom === "swipe") renderSwipe(); else if (cameFrom === "dups") renderDups(); else renderHome();
+}
+async function commit() {
+  const items = binned().filter(p => !spared.has(p.key)).map(p => ({ id: p.id, key: p.key }));
+  if (!items.length) return;
+  const mac = platform === "mac";
+  if (!confirm(mac
+    ? `Add ${items.length} item(s) to the "${album}" album in Photos?\n\nThen open that album in Photos, press ⌘A and ⌘⌫ to delete them.`
+    : `Delete ${items.length} item(s)?\n\nThey go to the Recycle Bin and are removed from iCloud on all your devices (recoverable from iCloud "Recently Deleted" for 30 days).`)) return;
+  const b = $("#confirmDel"); b.disabled = true; b.textContent = mac ? "Adding to album…" : "Deleting…";
+  const r = await fetch("/api/commit", { method: "POST", body: JSON.stringify({ items }) }).then(r => r.json());
+  const done = new Set(r.done);
+  const doneKeys = new Set(photos.filter(p => done.has(p.id)).map(p => p.key));
+  if (mac) for (const k of doneKeys) state[k] = "sent";
+  else { photos = photos.filter(p => !done.has(p.id)); for (const k of doneKeys) delete state[k]; }
+  undoStack = undoStack.filter(k => !doneKeys.has(k));
+  closeReview();
+  toast((mac ? `Added ${r.done.length} to “${album}” in Photos. Delete them there.` : `Deleted ${r.done.length}`) +
+    (r.failed.length ? ` · ${r.failed.length} failed (still in bin)` : ""), 6000);
+}
+
+// ---------- wiring ----------
+function goHome() { show("home"); renderHome(); }
+$("#back").onclick = goHome; $("#dupBack").onclick = goHome;
+$("#btnDel").onclick = () => decide("delete");
+$("#btnKeep").onclick = () => decide("keep");
+$("#btnUndo").onclick = undo;
+$("#reviewBtn").onclick = openReview; $("#homeBin").onclick = openReview; $("#dupReview").onclick = openReview;
+$("#closeReview").onclick = closeReview;
+$("#confirmDel").onclick = commit;
+// capture phase so focused buttons/inputs can never swallow the arrow keys
+window.addEventListener("keydown", e => {
+  if (e.key === "Escape") { if (view === "review") closeReview(); else if (view !== "home") goHome(); return; }
+  if (view !== "swipe" || e.ctrlKey || e.altKey || e.metaKey) return;
+  if (e.key === "ArrowLeft") { e.preventDefault(); decide("delete"); }
+  else if (e.key === "ArrowRight") { e.preventDefault(); decide("keep"); }
+  else if (e.key === "z" || e.key === "Z" || e.key === "Backspace") { e.preventDefault(); undo(); }
+  else if (e.key === " ") { e.preventDefault(); const c = $("#stack .card:not(.behind)"), v = c?.querySelector("video"); if (v) toggleSound(v, c); }
+}, true);
+load();
+</script>
+</body>
+</html>

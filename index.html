@@ -391,10 +391,15 @@ function queue() {
   if (i > 0) q.unshift(q.splice(i, 1)[0]);
   return q;
 }
+// Video sound: one choice for the whole session, not per video
+let soundOn = false;
+try { soundOn = sessionStorage.getItem("swipewipe.sound") === "1"; } catch {}
+function setSound(on) { soundOn = on; try { sessionStorage.setItem("swipewipe.sound", on ? "1" : "0"); } catch {} }
+const vtagText = muted => "▶ video · " + (muted ? "muted" : "sound on");
 function mediaEl(p, full = true) {
   if (p.kind === "video") {
     const v = document.createElement("video");
-    v.src = "/media/" + enc(p.id); v.muted = true; v.loop = true; v.autoplay = full; v.playsInline = true; v.preload = full ? "auto" : "metadata";
+    v.src = "/media/" + enc(p.id); v.muted = !(full && soundOn); v.loop = true; v.autoplay = full; v.playsInline = true; v.preload = full ? "auto" : "metadata";
     return v;
   }
   const i = new Image(); i.decoding = "async"; i.draggable = false; if (!full) i.loading = "lazy";
@@ -405,7 +410,7 @@ const thumbUrl = p => "/media/" + enc(p.id) + "?s=ph"; // card placeholder (no d
 function makeCard(p, behind) {
   const c = document.createElement("div");
   c.className = "card" + (behind ? " behind" : "");
-  const tags = [p.kind === "video" ? `<span class="tag vtag">▶ video · muted</span>` : "",
+  const tags = [p.kind === "video" ? `<span class="tag vtag">${vtagText(!soundOn)}</span>` : "",
     !p.dated ? `<span class="tag warn">⚠ no date</span>` : "", p.dup ? `<span class="tag">duplicate</span>` : "",
     p.favorite ? `<span class="tag fav">★ favorite</span>` : ""].join("");
   c.innerHTML = `<div class="loading">Loading from iCloud…</div>
@@ -425,7 +430,15 @@ function makeCard(p, behind) {
   // card on top requests the full photo; the server prefetches the rest in the background.
   if (behind) { c.dataset.name = p.key; return c; }
   const m = mediaEl(p, true);
-  if (p.kind === "video") m.poster = thumbUrl(p);
+  if (p.kind === "video") {
+    m.poster = thumbUrl(p);
+    // Browsers block autoplay with sound until you've clicked on the page (e.g. right
+    // after a reload). Then play muted rather than not at all; the preference stays.
+    if (!m.muted) m.addEventListener("canplay", () => m.play().catch(() => {
+      m.muted = true; m.play().catch(() => {});
+      const t = c.querySelector(".vtag"); if (t) t.textContent = vtagText(true);
+    }), { once: true });
+  }
   m.addEventListener(p.kind === "video" ? "loadeddata" : "load", () => { c.querySelector(".loading")?.remove(); m.style.display = ""; ph?.remove(); });
   let tries = 0;
   const base = m.src;
@@ -506,7 +519,10 @@ function attachDrag(card) {
     card.style.transition = "transform .25s"; card.style.transform = ""; sk.style.opacity = sd.style.opacity = 0; };
   card.addEventListener("pointerup", end); card.addEventListener("pointercancel", end);
 }
-function toggleSound(v, card) { v.muted = !v.muted; const t = card.querySelector(".vtag"); if (t) t.textContent = "▶ video · " + (v.muted ? "muted" : "sound on"); }
+function toggleSound(v, card) {
+  v.muted = !v.muted; setSound(!v.muted);
+  const t = card.querySelector(".vtag"); if (t) t.textContent = vtagText(v.muted);
+}
 function decide(d) {
   if (busy || view !== "swipe") return;
   const card = $("#stack .card:not(.behind)"), name = card?.dataset.name; if (!name) return;

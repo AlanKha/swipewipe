@@ -5,7 +5,7 @@ A personal desktop take on the swipe-to-clean-your-camera-roll idea. It runs loc
 - Swipe left to bin and right to keep, with the mouse or the ← / → keys. **↓** (or **Z**) undoes and **Esc** goes back home.
 - Home screen sets: **recents** (last 30 days), **random**, **duplicates**, **no date**, and one band per month.
 - Each set shows its progress, and a month is marked complete once every photo in it is swiped. You can also mark a month done by hand.
-- Nothing is deleted until you confirm in **Review bin**, and even then you get a 10-second undo.
+- Nothing is deleted until you confirm in **Review bin**, and even then you get a 5-second undo.
 
 ## Duplicates
 

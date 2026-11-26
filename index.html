@@ -619,7 +619,7 @@ function closeReview() {
 
 // Deleting is never instant: after confirming, there's a countdown with an Undo button.
 // Nothing is sent to the server until the countdown ends. Closing the tab during it cancels.
-const UNDO_SECONDS = 10;
+const UNDO_SECONDS = 5;
 let pending = null; // { items, keys:Set, timer, tick, left }
 // In-page confirm dialog. (Browser confirm() pop-ups are blocked in some embedded
 // browsers and silently return false, which made Delete do nothing.)

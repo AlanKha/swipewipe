@@ -66,33 +66,153 @@ NOWINDOW = 0x08000000 if IS_WIN else 0
 # ---- progress (shared between machines via iCloud Drive) ---------------------
 # Keys are "<filename without (1)>|<size in bytes>#<copy number>", which is the same
 # for a photo on Windows and Mac. Keys starting with "@" are bookkeeping (months
-# marked done). Every write re-reads the file first, so two machines merge.
-state_lock = threading.Lock()
+# marked done).
+#
+# iCloud Drive can't cope with a file being rewritten on every swipe: it splits it
+# into conflict copies ("progress 2.json", ...) and can leave the main file empty.
+# So the real copy lives on this computer (LOCAL_FILE), and a background thread
+# copies it to iCloud Drive at most every few seconds. Every entry carries a
+# timestamp, and merging keeps the newest decision per photo, so the PC and the Mac
+# (and any conflict copies iCloud made) combine without losing anything. A file that
+# can't be read is skipped, never treated as empty.
+LOCAL_FILE = os.path.join(CACHE_DIR, "progress-local.json")
+SYNC_EVERY = 3      # seconds between writes to iCloud Drive while there are changes
+PULL_EVERY = 30     # seconds between checks for changes from the other computer
 
 
-def read_state():
-    try:
-        with open(STATE_FILE, encoding="utf-8") as f:
-            data = json.load(f)
-            return data if isinstance(data, dict) else {}
-    except (OSError, ValueError):
-        return {}
+class Progress:
+    def __init__(self, local, shared):
+        self.local, self.shared = local, shared
+        self.lock = threading.Lock()
+        self.items = {}  # key -> {"d": decision or None, "t": unix time}
+        self.dirty = False
+        data = self._load(local)
+        if data is not None:
+            self.items = data
+        else:
+            self._migrate_legacy()
+            self._save_local()
+            self.dirty = True
+        self.pull()
+        threading.Thread(target=self._loop, daemon=True).start()
 
+    # -- file helpers
+    @staticmethod
+    def _load(path, legacy_ok=False):
+        """Entries from a v2 file (or a legacy flat file if legacy_ok). None if unreadable."""
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            return None
+        if isinstance(data, dict) and data.get("v") == 2 and isinstance(data.get("items"), dict):
+            return {k: e for k, e in data["items"].items() if isinstance(e, dict) and "t" in e}
+        if legacy_ok and isinstance(data, dict):
+            t = os.path.getmtime(path)
+            return {k: {"d": v, "t": t} for k, v in data.items() if isinstance(v, str)}
+        return None
 
-def update_state(changes):
-    """changes: {key: value or None (=remove)}. Merges with what's on disk."""
-    with state_lock:
-        st = read_state()
-        for k, v in changes.items():
-            if v is None:
-                st.pop(k, None)
-            else:
-                st[k] = v
-        tmp = STATE_FILE + ".tmp"
+    def _shared_files(self):
+        folder, base = os.path.split(self.shared)
+        stem, ext = os.path.splitext(base)
+        try:
+            names = os.listdir(folder)
+        except OSError:
+            return []
+        pat = re.compile(re.escape(stem) + r"( \d+)?" + re.escape(ext) + "$")
+        return sorted((os.path.join(folder, n) for n in names if pat.match(n)), key=os.path.getmtime)
+
+    def _migrate_legacy(self):
+        """First run of this version: take the newest non-empty old-style progress file.
+        (Older conflict copies are earlier snapshots of the same progress.)"""
+        best = None
+        for path in self._shared_files():
+            data = self._load(path, legacy_ok=True)
+            if data:
+                best = data
+        if best:
+            self.items = best
+            print(f"Recovered {len(best)} decisions from earlier progress files.")
+
+    def _merge(self, other):
+        changed = False
+        for k, e in other.items():
+            cur = self.items.get(k)
+            if cur is None or e.get("t", 0) > cur.get("t", 0):
+                self.items[k] = {"d": e.get("d"), "t": e.get("t", 0)}
+                changed = True
+        return changed
+
+    def _dump(self):
+        return json.dumps({"v": 2, "items": self.items}, separators=(",", ":"))
+
+    def _save_local(self):
+        tmp = self.local + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(st, f)
-        os.replace(tmp, STATE_FILE)
-        return st
+            f.write(self._dump())
+        os.replace(tmp, self.local)  # local disk: atomic replace is fine here
+
+    # -- sync with iCloud Drive
+    def pull(self):
+        """Merge in anything newer from iCloud Drive (incl. conflict copies)."""
+        with self.lock:
+            changed = False
+            for path in self._shared_files():
+                data = self._load(path)
+                if data:
+                    changed |= self._merge(data)
+            if changed:
+                self._save_local()
+                self.dirty = True
+
+    def push(self):
+        with self.lock:
+            if not self.dirty:
+                return
+            payload = self._dump()
+            self.dirty = False
+        try:
+            # write in place (no rename) - renames are what confuse iCloud Drive
+            with open(self.shared, "w", encoding="utf-8") as f:
+                f.write(payload)
+        except OSError as e:
+            print("Couldn't save progress to iCloud Drive (will retry):", e)
+            with self.lock:
+                self.dirty = True
+
+    def _loop(self):
+        last_pull = time.time()
+        while True:
+            time.sleep(SYNC_EVERY)
+            try:
+                if time.time() - last_pull > PULL_EVERY:
+                    self.pull()
+                    last_pull = time.time()
+                self.push()
+            except Exception as e:
+                print("progress sync:", e)
+
+    # -- used by the server
+    def view(self):
+        with self.lock:
+            return {k: e["d"] for k, e in self.items.items() if e.get("d")}
+
+    def get(self, key):
+        with self.lock:
+            e = self.items.get(key)
+            return e and e.get("d")
+
+    def update(self, changes):
+        """changes: {key: decision or None (=remove)}"""
+        now = time.time()
+        with self.lock:
+            for k, v in changes.items():
+                self.items[k] = {"d": v, "t": now}
+            self._save_local()
+            self.dirty = True
+
+
+PROGRESS = None
 
 
 COPY_RE = re.compile(r"\((\d+)\)(?=\.[^.]+$)")
@@ -472,9 +592,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"ok": True})
         if u.path == "/api/photos":
             photos = LIB.list()
-            with state_lock:
-                st = read_state()
-            return self.send_json({"photos": photos, "state": st, "platform": LIB.platform,
+            PROGRESS.pull()
+            return self.send_json({"photos": photos, "state": PROGRESS.view(), "platform": LIB.platform,
                                    "album": ALBUM, "progressFile": STATE_FILE})
         if u.path.startswith("/media/"):
             return self.serve_media(unquote(u.path[len("/media/"):]), parse_qs(u.query))
@@ -577,7 +696,7 @@ class Handler(BaseHTTPRequestHandler):
                     changes[key] = "1" if d == "1" else None
                 else:
                     changes[key] = d if d in ("keep", "delete") else None
-            update_state(changes)
+            PROGRESS.update(changes)
             return self.send_json({"ok": True})
         if u.path == "/api/prefetch":
             ids = [i for i in body.get("ids", []) if isinstance(i, str)][:50]
@@ -585,12 +704,12 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"ok": True})
         if u.path == "/api/commit":
             # body.items: [{id, key}] - only items still marked "delete" are touched
-            st = read_state()
-            wanted = [it for it in body.get("items", []) if st.get(it.get("key")) == "delete"]
+            wanted = [it for it in body.get("items", []) if PROGRESS.get(it.get("key")) == "delete"]
             done_ids = set(LIB.remove([it["id"] for it in wanted]))
             done = [it for it in wanted if it["id"] in done_ids]
             # Windows: file is gone -> forget it. Mac: in the album -> remember as "sent".
-            update_state({it["key"]: (None if IS_WIN else "sent") for it in done})
+            PROGRESS.update({it["key"]: (None if IS_WIN else "sent") for it in done})
+            PROGRESS.push()
             return self.send_json({"done": [it["id"] for it in done],
                                    "failed": [it["id"] for it in wanted if it["id"] not in done_ids],
                                    "mode": "recycle" if IS_WIN else "album"})
@@ -598,8 +717,9 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    global LIB, PREFETCH
+    global LIB, PREFETCH, PROGRESS
     PREFETCH = Prefetcher()
+    PROGRESS = Progress(LOCAL_FILE, STATE_FILE)
     if IS_WIN:
         LIB = WindowsLibrary()
     elif IS_MAC:

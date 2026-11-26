@@ -366,6 +366,8 @@ class Handler(BaseHTTPRequestHandler):
         if u.path in ("/", "/index.html"):
             with open(os.path.join(HERE, "index.html"), "rb") as f:
                 return self.send_bytes(f.read(), "text/html; charset=utf-8")
+        if u.path == "/api/ping":
+            return self.send_json({"ok": True})
         if u.path == "/api/photos":
             photos = LIB.list()
             with state_lock:

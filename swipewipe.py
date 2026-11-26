@@ -17,6 +17,7 @@ import json
 import mimetypes
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -399,6 +400,8 @@ class MacLibrary:
     platform = "mac"
 
     def __init__(self):
+        # give up on a stuck iCloud download after 2 minutes (osxphotos' default is 5)
+        os.environ.setdefault("OSXPHOTOS_PHOTOKIT_TIMEOUT", "120")
         try:
             import osxphotos
         except ImportError:
@@ -409,13 +412,18 @@ class MacLibrary:
         except Exception as e:
             sys.exit(f"Couldn't open the Photos library: {e}\n"
                      "Give your terminal Full Disk Access: System Settings > Privacy & Security > Full Disk Access.")
-        self.paths, self.names = {}, {}
+        self.paths, self.names, self.thumbs, self.cloud, self.videos, self.sizes = {}, {}, {}, {}, set(), {}
+        self.photokit, self.pk_lock = None, threading.Lock()
+        self.dl_locks = {}
+        self.dl_slots = threading.Semaphore(3)  # iCloud downloads at once
+        self.dl_dir = os.path.join(CACHE_DIR, "originals")
+        os.makedirs(self.dl_dir, exist_ok=True)
 
     def describe(self):
         return self.db.library_path
 
     def list(self):
-        items, self.paths, self.names, self.thumbs = [], {}, {}, {}
+        items, self.paths, self.names, self.thumbs, self.cloud, self.videos, self.sizes = [], {}, {}, {}, {}, set(), {}
         for p in self.db.photos():
             # Shared Album items aren't part of your library: Photos won't let us add
             # them to an album, so they could never be binned.
@@ -428,13 +436,16 @@ class MacLibrary:
             ders = sorted((d for d in (p.path_derivatives or []) if os.path.exists(d)),
                           key=os.path.getsize, reverse=True)
             self.thumbs[p.uuid] = ders[0] if ders else None
-            # Prefer the edited version, then the original, then (photos only) the preview.
-            # A video's preview is a still JPEG, so it can't stand in for the video itself.
+            # Prefer the edited version, then the original. Neither on disk ("Optimize Mac
+            # Storage")? Then it's downloaded from iCloud through PhotoKit when needed.
             src = p.path_edited or p.path
-            if not src and not p.ismovie:
-                src = self.thumbs[p.uuid]
+            if not src:
+                self.cloud[p.uuid] = bool(p.hasadjustments)
+            if p.ismovie:
+                self.videos.add(p.uuid)
             self.paths[p.uuid] = src
             self.names[p.uuid] = name
+            self.sizes[p.uuid] = p.original_filesize or 0
             try:
                 taken = p.date.timestamp() if p.date else None
             except Exception:
@@ -442,13 +453,98 @@ class MacLibrary:
             items.append({
                 "id": p.uuid, "name": name, "kind": "video" if p.ismovie else "image", "ext": ext,
                 "size": p.original_filesize or 0, "mtime": taken or 0, "taken": taken,
-                "local": bool(src), "favorite": bool(p.favorite),
+                "favorite": bool(p.favorite),
             })
         return finish_items(items)
 
     def path(self, pid):
+        """The photo/video file, downloading it from iCloud first if it isn't on this Mac."""
         p = self.paths.get(pid)
-        return p if p and os.path.isfile(p) else None
+        if p and os.path.isfile(p):
+            return p
+        if pid not in self.cloud:
+            return None
+        return self.download(pid)
+
+    def is_video(self, pid):
+        return pid in self.videos
+
+    def size(self, pid):
+        return self.sizes.get(pid, 0)
+
+    def _photokit(self):
+        with self.pk_lock:
+            if self.photokit is None:
+                from osxphotos.photokit import PhotoLibrary
+                try:
+                    self.photokit = PhotoLibrary()  # asks for Photos access the first time
+                except Exception as e:
+                    raise RuntimeError("SwipeWipe needs access to Photos to download from iCloud. Allow it in "
+                                       "System Settings > Privacy & Security > Photos, then restart SwipeWipe.") from e
+            return self.photokit
+
+    def download(self, pid):
+        """Fetch the original from iCloud into the cache (once, even if asked twice at the same time)."""
+        if not re.fullmatch(r"[0-9A-Fa-f-]+", pid):
+            return None
+        dest = os.path.join(self.dl_dir, pid)
+        with self.pk_lock:
+            lock = self.dl_locks.setdefault(pid, threading.Lock())
+        with lock:
+            got = self._cached(dest, pid)
+            if got:
+                return got
+            from osxphotos.photokit import PHOTOS_VERSION_CURRENT, PHOTOS_VERSION_ORIGINAL, PhotoAsset
+            lib = self._photokit()
+            tmp = dest + ".part"
+            shutil.rmtree(tmp, ignore_errors=True)
+            os.makedirs(tmp)
+            with self.dl_slots:
+                asset = lib.fetch_uuid(pid)
+                if pid in self.videos:
+                    # the original: rendering an edited video can take minutes
+                    asset.export(tmp, version=PHOTOS_VERSION_ORIGINAL, overwrite=True)
+                else:
+                    # just the still (a Live Photo's video isn't needed, and rendering an edited
+                    # one hangs). Edited photos come out edited, so crops look like they do in Photos.
+                    version = PHOTOS_VERSION_CURRENT if self.cloud.get(pid) else PHOTOS_VERSION_ORIGINAL
+                    PhotoAsset.export(asset, tmp, version=version, overwrite=True)
+            shutil.rmtree(dest, ignore_errors=True)
+            os.replace(tmp, dest)
+            got = self._cached(dest, pid)
+            if not got:
+                raise RuntimeError("iCloud download returned no file")
+            self._prune()
+            return got
+
+    def _cached(self, dest, pid):
+        """The downloaded file in dest. Live Photos come with a video too: pick the still."""
+        if not os.path.isdir(dest):
+            return None
+        files = sorted(os.path.join(dest, f) for f in os.listdir(dest))
+        want_video = pid in self.videos
+        for f in files:
+            if (os.path.splitext(f)[1].lower() in VIDEO_EXT) == want_video:
+                return f
+        return files[0] if files else None
+
+    DL_CACHE_MAX = 2 * 1024 ** 3  # Photos keeps its own copy too
+
+    def _prune(self):
+        """Keep downloaded originals under DL_CACHE_MAX, dropping the least recently downloaded."""
+        dirs = []
+        for d in os.listdir(self.dl_dir):
+            full = os.path.join(self.dl_dir, d)
+            if d.endswith(".part") or not os.path.isdir(full):
+                continue
+            size = sum(os.path.getsize(os.path.join(full, f)) for f in os.listdir(full))
+            dirs.append((os.path.getmtime(full), size, full))
+        total = sum(d[1] for d in dirs)
+        for _, size, full in sorted(dirs):
+            if total <= self.DL_CACHE_MAX:
+                break
+            shutil.rmtree(full, ignore_errors=True)
+            total -= size
 
     def thumb_path(self, pid):
         p = getattr(self, "thumbs", {}).get(pid)
@@ -535,6 +631,8 @@ class Prefetcher:
                     self.done.add(pid)
 
     def fetch(self, pid):
+        if hasattr(LIB, "size") and LIB.is_video(pid) and LIB.size(pid) > self.MAX_VIDEO:
+            return False
         path = LIB.path(pid)
         if not path:
             return False
@@ -620,13 +718,22 @@ class Handler(BaseHTTPRequestHandler):
         self.send_bytes(b"not found", "text/plain", 404)
 
     def serve_media(self, pid, q):
-        path = LIB.path(pid)
         size = q.get("s", ["full"])[0]
-        # Mac: Photos keeps a JPEG preview even for videos and cloud-only items
+        # Mac: Photos keeps a JPEG preview even for videos and cloud-only items. Use it for
+        # thumbnails, so they never wait on an iCloud download.
         if size in ("thumb", "ph") and hasattr(LIB, "thumb_path"):
             t = LIB.thumb_path(pid)
-            if t and (not path or os.path.splitext(path)[1].lower() in VIDEO_EXT):
+            if t:
                 return self.serve_file(t, os.path.splitext(t)[1].lower())
+            if size == "ph" or LIB.is_video(pid):
+                return self.send_bytes(b"no thumbnail", "text/plain", 404)
+        try:
+            path = LIB.path(pid)  # Mac: may download from iCloud first
+        except (ConnectionError, BrokenPipeError):
+            return
+        except Exception as e:
+            print(f"Couldn't download {pid}: {e}")
+            return self.send_bytes(str(e).encode(), "text/plain", 502)
         if not path:
             return self.send_bytes(b"not available on this computer", "text/plain", 404)
         ext = os.path.splitext(path)[1].lower()

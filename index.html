@@ -404,7 +404,7 @@ function makeCard(p, behind) {
   const c = document.createElement("div");
   c.className = "card" + (behind ? " behind" : "");
   const tags = [p.kind === "video" ? `<span class="tag vtag">▶ video · muted</span>` : "",
-    !p.dated ? `<span class="tag warn">⚠ no date</span>` : "", p.local === false ? `<span class="tag warn">not downloaded to this Mac</span>` : "", p.dup ? `<span class="tag">duplicate</span>` : "",
+    !p.dated ? `<span class="tag warn">⚠ no date</span>` : "", p.dup ? `<span class="tag">duplicate</span>` : "",
     p.favorite ? `<span class="tag fav">★ favorite</span>` : ""].join("");
   c.innerHTML = `<div class="loading">Loading from iCloud…</div>
     <div class="stamp keep">KEEP</div><div class="stamp del">BIN</div><div class="tags">${tags}</div>
@@ -422,12 +422,6 @@ function makeCard(p, behind) {
   // per site, and full-size downloads from iCloud can take many seconds each, so only the
   // card on top requests the full photo; the server prefetches the rest in the background.
   if (behind) { c.dataset.name = p.key; return c; }
-  if (p.kind === "video" && p.local === false && platform === "mac") { // Mac: only Photos' still preview is on disk
-    const l = c.querySelector(".loading");
-    l.innerHTML = "Video isn't downloaded to this Mac. Showing a still.<br>You can still swipe it.";
-    c.dataset.name = p.key;
-    return c;
-  }
   const m = mediaEl(p, true);
   if (p.kind === "video") m.poster = thumbUrl(p);
   m.addEventListener(p.kind === "video" ? "loadeddata" : "load", () => { c.querySelector(".loading")?.remove(); m.style.display = ""; ph?.remove(); });

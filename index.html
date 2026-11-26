@@ -165,10 +165,10 @@
   <div class="stage"><div id="stack"></div></div>
   <div class="controls">
     <button class="round del" id="btnDel" title="Bin (←)">✕</button>
-    <button class="round undo" id="btnUndo" title="Undo (Z)">↶</button>
+    <button class="round undo" id="btnUndo" title="Undo (↓ or Z)">↶</button>
     <button class="round keep" id="btnKeep" title="Keep (→)">♥</button>
   </div>
-  <div class="hint">← bin · → keep · Z undo · Space video sound · Esc home &nbsp;(or drag the card)</div>
+  <div class="hint">← bin · → keep · ↓ undo · Space video sound · Esc home &nbsp;(or drag the card)</div>
 </section>
 
 <!-- DUPLICATES -->
@@ -606,11 +606,11 @@ $("#confirmDel").onclick = commit;
 window.addEventListener("keydown", e => {
   if (ask.esc) { if (e.key === "Escape") { e.preventDefault(); ask.esc(); } return; } // dialog open: keys go to it only
   if (e.key === "Escape") { if (view === "review") closeReview(); else if (view !== "home") goHome(); return; }
-  if (pending && (e.key === "z" || e.key === "Z")) { e.preventDefault(); cancelPending(); return; } // undo the delete first
+  if (pending && (e.key === "z" || e.key === "Z" || e.key === "ArrowDown")) { e.preventDefault(); cancelPending(); return; } // undo the delete first
   if (view !== "swipe" || e.ctrlKey || e.altKey || e.metaKey) return;
   if (e.key === "ArrowLeft") { e.preventDefault(); decide("delete"); }
   else if (e.key === "ArrowRight") { e.preventDefault(); decide("keep"); }
-  else if (e.key === "z" || e.key === "Z" || e.key === "Backspace") { e.preventDefault(); undo(); }
+  else if (e.key === "ArrowDown" || e.key === "z" || e.key === "Z" || e.key === "Backspace") { e.preventDefault(); undo(); }
   else if (e.key === " ") { e.preventDefault(); const c = $("#stack .card:not(.behind)"), v = c?.querySelector("video"); if (v) toggleSound(v, c); }
 }, true);
 load();

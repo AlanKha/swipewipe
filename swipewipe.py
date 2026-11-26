@@ -24,7 +24,7 @@ import time
 import webbrowser
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 IS_WIN = sys.platform == "win32"
 IS_MAC = sys.platform == "darwin"
@@ -50,7 +50,9 @@ os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
 
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".heic", ".heif", ".gif", ".webp", ".bmp", ".tif", ".tiff"}
 VIDEO_EXT = {".mp4", ".mov", ".m4v", ".avi", ".webm"}
-RAW_OK = {".png", ".gif", ".webp"}  # served as-is for the big card view
+# Served as the untouched original for the big card view, so right-click > Save/Copy
+# image gives you the real file. (HEIC etc. must be converted for the browser.)
+RAW_OK = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 
 try:
     from PIL import Image, ImageOps
@@ -250,13 +252,13 @@ class MacLibrary:
         except Exception as e:
             sys.exit(f"Couldn't open the Photos library: {e}\n"
                      "Give your terminal Full Disk Access: System Settings > Privacy & Security > Full Disk Access.")
-        self.paths = {}
+        self.paths, self.names = {}, {}
 
     def describe(self):
         return self.db.library_path
 
     def list(self):
-        items, self.paths = [], {}
+        items, self.paths, self.names = [], {}, {}
         for p in self.db.photos():
             if p.intrash:
                 continue
@@ -269,6 +271,7 @@ class MacLibrary:
                 ders = [d for d in (p.path_derivatives or []) if os.path.exists(d)]
                 src = ders[0] if ders else None
             self.paths[p.uuid] = src
+            self.names[p.uuid] = name
             try:
                 taken = p.date.timestamp() if p.date else None
             except Exception:
@@ -385,6 +388,11 @@ class Handler(BaseHTTPRequestHandler):
         ext = os.path.splitext(path)[1].lower()
         size = q.get("s", ["full"])[0]
         convert = ext in IMAGE_EXT and (size == "thumb" or ext not in RAW_OK) and (HAVE_PIL or IS_MAC or ext in (".heic", ".heif"))
+        # Suggested filename for right-click > Save image (Mac ids are UUIDs, converted files are JPEGs)
+        name = getattr(LIB, "names", {}).get(pid, pid)
+        if convert:
+            name = os.path.splitext(name)[0] + ".jpg"
+        disp = {"Content-Disposition": "inline; filename*=UTF-8''" + quote(name)}
         last = None
         # Cloud-only files download on first read, and that download sometimes fails when
         # iCloud is busy. Retry a few times before giving up.
@@ -392,8 +400,8 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 if convert:
                     data = rendered(path, 420 if size == "thumb" else 1800)
-                    return self.send_bytes(data, "image/jpeg", extra={"Cache-Control": "max-age=86400"})
-                return self.serve_file(path, ext)
+                    return self.send_bytes(data, "image/jpeg", extra={"Cache-Control": "max-age=86400", **disp})
+                return self.serve_file(path, ext, disp)
             except (ConnectionError, BrokenPipeError):
                 return
             except Exception as e:
@@ -405,7 +413,7 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             pass
 
-    def serve_file(self, path, ext):
+    def serve_file(self, path, ext, extra=None):
         ctype = {".mov": "video/mp4"}.get(ext) or mimetypes.guess_type(path)[0] or "application/octet-stream"
         total = os.path.getsize(path)
         with open(path, "rb") as f:  # make iCloud fetch it now, while we can still retry
@@ -424,6 +432,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", ctype)
         self.send_header("Accept-Ranges", "bytes")
+        for k, v in (extra or {}).items():
+            self.send_header(k, v)
         self.send_header("Content-Length", str(end - start + 1))
         if status == 206:
             self.send_header("Content-Range", f"bytes {start}-{end}/{total}")

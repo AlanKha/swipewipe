@@ -605,7 +605,11 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_bytes(b"not available on this computer", "text/plain", 404)
         ext = os.path.splitext(path)[1].lower()
         size = q.get("s", ["full"])[0]
-        if size == "thumb" and hasattr(LIB, "shell_thumb"):
+        # s=ph: card placeholder - only if the shell already has a thumbnail; never download for it
+        # s=thumb: grid tile - fall back to building one from the photo if needed
+        if size == "ph" and not hasattr(LIB, "shell_thumb"):
+            size = "thumb"  # Mac: thumbnails come from local previews anyway
+        if size in ("thumb", "ph") and hasattr(LIB, "shell_thumb"):
             try:
                 data = LIB.shell_thumb(path, 768)
             except Exception as e:
@@ -613,7 +617,7 @@ class Handler(BaseHTTPRequestHandler):
                 data = None
             if data:
                 return self.send_bytes(data, "image/jpeg", extra={"Cache-Control": "max-age=86400"})
-            if ext in VIDEO_EXT:  # no poster frame available; don't download the video for one
+            if ext in VIDEO_EXT or size == "ph":  # no shell thumbnail: don't download just for a preview
                 return self.send_bytes(b"no thumbnail", "text/plain", 404)
         convert = ext in IMAGE_EXT and (size == "thumb" or ext not in RAW_OK) and (HAVE_PIL or IS_MAC or ext in (".heic", ".heif"))
         # Suggested filename for right-click > Save image (Mac ids are UUIDs, converted files are JPEGs)

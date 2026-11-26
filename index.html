@@ -393,7 +393,7 @@ function mediaEl(p, full = true) {
   i.src = "/media/" + enc(p.id) + (full ? "?s=full" : "?s=thumb");
   return i;
 }
-const thumbUrl = p => "/media/" + enc(p.id) + "?s=thumb";
+const thumbUrl = p => "/media/" + enc(p.id) + "?s=ph"; // card placeholder (no download)
 function makeCard(p, behind) {
   const c = document.createElement("div");
   c.className = "card" + (behind ? " behind" : "");
@@ -402,16 +402,21 @@ function makeCard(p, behind) {
   c.innerHTML = `<div class="loading">Loading from iCloud…</div>
     <div class="stamp keep">KEEP</div><div class="stamp del">BIN</div><div class="tags">${tags}</div>
     <div class="meta"><b>${fmtDate(p)}</b><span>${fmtSize(p.size)}</span><span>${p.name}</span></div>`;
-  const m = mediaEl(p, true);
-  // Thumbnail placeholder while the full photo downloads (Windows gets these from iCloud
-  // without downloading the original, so they show up almost immediately).
+  // Thumbnail placeholder first (Windows gets these from iCloud without downloading the
+  // original, so they show up almost immediately), then the full photo.
   let ph = null;
-  if (p.kind === "image") {
+  if (p.kind === "image" || platform === "windows") {
     ph = new Image(); ph.className = "ph"; ph.draggable = false; ph.src = thumbUrl(p);
     ph.onload = () => c.querySelector(".loading")?.classList.add("over");
     ph.onerror = () => { ph.remove(); ph = null; };
     c.prepend(ph);
-  } else if (platform === "windows") m.poster = thumbUrl(p);
+  }
+  // The card waiting behind only needs its thumbnail. Browsers allow just 6 connections
+  // per site, and full-size downloads from iCloud can take many seconds each, so only the
+  // card on top requests the full photo; the server prefetches the rest in the background.
+  if (behind) { c.dataset.name = p.key; return c; }
+  const m = mediaEl(p, true);
+  if (p.kind === "video" && platform === "windows") m.poster = thumbUrl(p);
   m.addEventListener(p.kind === "video" ? "loadeddata" : "load", () => { c.querySelector(".loading")?.remove(); m.style.display = ""; ph?.remove(); });
   let tries = 0;
   const base = m.src;
@@ -438,7 +443,10 @@ function makeCard(p, behind) {
   return c;
 }
 function renderSwipe() {
-  const stack = $("#stack"); stack.innerHTML = "";
+  const stack = $("#stack");
+  // stop downloads for cards we're about to throw away, so they don't block new requests
+  stack.querySelectorAll("img, video").forEach(el => { el.removeAttribute("src"); if (el.load) el.load(); });
+  stack.innerHTML = "";
   const q = queue(), done = order.length - q.length;
   $("#count").textContent = q.length ? `${done + 1} / ${order.length}` : `${order.length} / ${order.length}`;
   $("#progress").style.width = order.length ? (done / order.length * 100) + "%" : "0";
@@ -457,8 +465,8 @@ function renderSwipe() {
 }
 // Two layers of preloading:
 //  1. the server downloads (from iCloud) and converts the next PREFETCH_AHEAD photos in the background
-//  2. the browser fetches and decodes the next BROWSER_AHEAD images so they appear instantly
-const PREFETCH_AHEAD = 15, BROWSER_AHEAD = 4;
+//  2. the browser loads the next few *thumbnails* (full photos would hog its 6 connections)
+const PREFETCH_AHEAD = 15;
 let lastPrefetch = "", warm = new Map();
 function preload(q) {
   const ids = q.slice(0, PREFETCH_AHEAD).map(p => p.id), sig = ids.join("|");
@@ -471,11 +479,6 @@ function preload(q) {
     if (p.kind !== "image") continue;
     const t = warm.get("t:" + p.id) || Object.assign(new Image(), { src: thumbUrl(p) });
     keep.set("t:" + p.id, t);
-  }
-  for (const p of q.slice(2, 2 + BROWSER_AHEAD)) { // 0 and 1 are already on screen
-    if (p.kind !== "image") continue;
-    const img = warm.get(p.id) || mediaEl(p, true);
-    keep.set(p.id, img); // holding a reference keeps the decoded image around
   }
   warm = keep;
 }

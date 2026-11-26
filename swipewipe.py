@@ -208,6 +208,43 @@ class WindowsLibrary:
         if r.returncode != 0:
             raise RuntimeError("HEIC convert failed: " + r.stderr.decode("utf-8", "replace")[-300:])
 
+    # Thumbnails straight from the Windows shell: iCloud provides these for cloud-only
+    # photos *without* downloading the original, so they're instant placeholders.
+    THUMB_HELPERS = 2
+
+    def shell_thumb(self, src, max_px):
+        """Cached JPEG bytes of the shell thumbnail, or None if there isn't one."""
+        st = os.stat(src)
+        key = hashlib.sha1(f"shell|{src}|{st.st_mtime}|{st.st_size}|{max_px}".encode()).hexdigest()
+        cp = os.path.join(CACHE_DIR, key + ".jpg")
+        if not os.path.exists(cp):
+            if not hasattr(self, "_helpers"):
+                import queue
+                self._helpers = queue.Queue()
+                for _ in range(self.THUMB_HELPERS):
+                    self._helpers.put(None)  # started lazily
+            proc = self._helpers.get()
+            try:
+                if proc is None or proc.poll() is not None:
+                    proc = subprocess.Popen(
+                        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", os.path.join(HERE, "shellthumb.ps1")],
+                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                        creationflags=NOWINDOW, text=True, encoding="utf-8", bufsize=1)
+                tmp = f"{cp}.{threading.get_ident()}.tmp"
+                proc.stdin.write(f"{src}\t{tmp}\t{max_px}\n")
+                proc.stdin.flush()
+                reply = proc.stdout.readline().strip()
+                if reply != "ok" or not os.path.exists(tmp):
+                    return None
+                os.replace(tmp, cp)
+            except OSError:
+                proc = None  # helper died; a new one starts next time
+                return None
+            finally:
+                self._helpers.put(proc)
+        with open(cp, "rb") as f:
+            return f.read()
+
     def remove(self, ids):
         """Send to the Recycle Bin. Returns ids that are gone."""
         import ctypes
@@ -449,6 +486,16 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_bytes(b"not available on this computer", "text/plain", 404)
         ext = os.path.splitext(path)[1].lower()
         size = q.get("s", ["full"])[0]
+        if size == "thumb" and hasattr(LIB, "shell_thumb"):
+            try:
+                data = LIB.shell_thumb(path, 768)
+            except Exception as e:
+                print(f"shell thumbnail {pid}: {e}")
+                data = None
+            if data:
+                return self.send_bytes(data, "image/jpeg", extra={"Cache-Control": "max-age=86400"})
+            if ext in VIDEO_EXT:  # no poster frame available; don't download the video for one
+                return self.send_bytes(b"no thumbnail", "text/plain", 404)
         convert = ext in IMAGE_EXT and (size == "thumb" or ext not in RAW_OK) and (HAVE_PIL or IS_MAC or ext in (".heic", ".heif"))
         # Suggested filename for right-click > Save image (Mac ids are UUIDs, converted files are JPEGs)
         name = getattr(LIB, "names", {}).get(pid, pid)

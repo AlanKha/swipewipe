@@ -78,6 +78,12 @@
   .card .stamp.del { right: 26px; color: var(--del); transform: rotate(12deg); }
   .card .stamp.keep { left: 26px; color: var(--keep); transform: rotate(-12deg); }
   .card .loading, .card .err { color: var(--muted); padding: 20px; text-align: center; }
+  /* thumbnail placeholder sits behind the full photo, which covers it once loaded */
+  .card img.ph { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; z-index: 0; }
+  .card > img:not(.ph), .card > video { position: relative; z-index: 1; }
+  .card .loading.over { position: absolute; bottom: 52px; left: 50%; transform: translateX(-50%); z-index: 2; padding: 4px 10px;
+    background: rgba(0,0,0,.6); color: #ddd; border-radius: 6px; font-size: 12px; white-space: nowrap; }
+  .card .stamp, .card .tags, .card .meta { z-index: 3; }
   .card .tags { position: absolute; top: 12px; left: 12px; display: flex; gap: 6px; }
   .card .tag { background: rgba(0,0,0,.65); padding: 3px 8px; border-radius: 6px; font-size: 12px; }
   .card .tag.warn { background: #6b4a00; color: #ffe08a; }
@@ -387,6 +393,7 @@ function mediaEl(p, full = true) {
   i.src = "/media/" + enc(p.id) + (full ? "?s=full" : "?s=thumb");
   return i;
 }
+const thumbUrl = p => "/media/" + enc(p.id) + "?s=thumb";
 function makeCard(p, behind) {
   const c = document.createElement("div");
   c.className = "card" + (behind ? " behind" : "");
@@ -396,7 +403,16 @@ function makeCard(p, behind) {
     <div class="stamp keep">KEEP</div><div class="stamp del">BIN</div><div class="tags">${tags}</div>
     <div class="meta"><b>${fmtDate(p)}</b><span>${fmtSize(p.size)}</span><span>${p.name}</span></div>`;
   const m = mediaEl(p, true);
-  m.addEventListener(p.kind === "video" ? "loadeddata" : "load", () => { c.querySelector(".loading")?.remove(); m.style.display = ""; });
+  // Thumbnail placeholder while the full photo downloads (Windows gets these from iCloud
+  // without downloading the original, so they show up almost immediately).
+  let ph = null;
+  if (p.kind === "image") {
+    ph = new Image(); ph.className = "ph"; ph.draggable = false; ph.src = thumbUrl(p);
+    ph.onload = () => c.querySelector(".loading")?.classList.add("over");
+    ph.onerror = () => { ph.remove(); ph = null; };
+    c.prepend(ph);
+  } else if (platform === "windows") m.poster = thumbUrl(p);
+  m.addEventListener(p.kind === "video" ? "loadeddata" : "load", () => { c.querySelector(".loading")?.remove(); m.style.display = ""; ph?.remove(); });
   let tries = 0;
   const base = m.src;
   m.addEventListener("error", async () => {
@@ -451,6 +467,11 @@ function preload(q) {
     fetch("/api/prefetch", { method: "POST", body: JSON.stringify({ ids }) }).catch(() => {});
   }
   const keep = new Map();
+  for (const p of q.slice(2, 10)) { // thumbnails are tiny: warm a few more of them
+    if (p.kind !== "image") continue;
+    const t = warm.get("t:" + p.id) || Object.assign(new Image(), { src: thumbUrl(p) });
+    keep.set("t:" + p.id, t);
+  }
   for (const p of q.slice(2, 2 + BROWSER_AHEAD)) { // 0 and 1 are already on screen
     if (p.kind !== "image") continue;
     const img = warm.get(p.id) || mediaEl(p, true);

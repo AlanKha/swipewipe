@@ -124,7 +124,8 @@
   .tile .warn { position: absolute; left: 6px; top: 6px; background: #6b4a00; color: #ffe08a; font-size: 11px; padding: 1px 6px; border-radius: 5px; }
   .note { color: var(--muted); font-size: 12.5px; padding: 10px 18px 0; }
   #toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); background: #26262d; color: #fff; border: 1px solid var(--line);
-    padding: 10px 16px; border-radius: 10px; display: none; z-index: 20; }
+    padding: 10px 16px; border-radius: 10px; display: none; z-index: 20; align-items: center; gap: 14px; max-width: 92vw; }
+  #toast button { background: #fff; color: #111; border: 0; border-radius: 7px; padding: 6px 14px; font-weight: 700; }
   #loadingAll { display: grid; place-items: center; height: 100%; font-weight: 700; font-size: 18px; }
 </style>
 </head>
@@ -181,10 +182,11 @@
 <!-- REVIEW -->
 <section class="view" id="review">
   <div class="topbar">
-    <button class="btn" id="closeReview">← Back</button>
+    <button class="btn" id="closeReview" title="Leave them in the bin for later (Esc)">← Not now</button>
     <h2 id="reviewTitle">Review bin</h2>
-    <span class="stat">Click a photo to spare it</span>
+    <span class="stat">Click a photo to keep it</span>
     <span class="spacer"></span>
+    <button class="btn" id="spareAll">Keep all</button>
     <button class="btn solid" id="confirmDel">Delete</button>
   </div>
   <div class="note" id="reviewNote">Files go to the Windows Recycle Bin, and iCloud syncs the deletion to your other devices.
@@ -204,8 +206,8 @@ const fmtDate = p => p.dated ? new Date(p.mtime * 1000).toLocaleDateString(undef
 const monthName = m => { const [y, mo] = m.split("-"); return new Date(+y, +mo - 1).toLocaleDateString("en", { month: "short" }).toUpperCase() + " ’" + y.slice(2); };
 const post = (key, decision) => fetch("/api/decide", { method: "POST", body: JSON.stringify({ key, decision }) });
 let platform = "windows", album = "";
-const binned = () => photos.filter(p => state[p.key] === "delete");
-function toast(msg, ms = 2600) { const t = $("#toast"); t.textContent = msg; t.style.display = "block"; clearTimeout(toast.h); toast.h = setTimeout(() => t.style.display = "none", ms); }
+const binned = () => photos.filter(p => state[p.key] === "delete" && !(pending && pending.keys.has(p.key)));
+function toast(msg, ms = 2600) { const t = $("#toast"); t.textContent = msg; t.style.display = "flex"; clearTimeout(toast.h); toast.h = setTimeout(() => t.style.display = "none", ms); }
 function show(v) { view = v; document.querySelectorAll(".view").forEach(s => s.classList.toggle("on", s.id === v)); }
 
 async function load() {
@@ -359,7 +361,11 @@ function decide(d) {
   card.style.opacity = 0;
   card.querySelector(d === "keep" ? ".stamp.keep" : ".stamp.del").style.opacity = 1;
   state[name] = d; undoStack.push(name); front = null; post(name, d);
-  setTimeout(() => { busy = false; renderSwipe(); }, 200);
+  setTimeout(() => {
+    busy = false; renderSwipe();
+    // finished the set? show what was binned in it and ask before deleting anything
+    if (!queue().length && binned().some(set.filter)) openReview(set);
+  }, 200);
 }
 function undo() {
   const name = undoStack.pop(); if (!name) return;
@@ -405,11 +411,14 @@ $("#dupAuto").onclick = () => {
 };
 
 // ---------- review ----------
-let spared = new Set();
-function openReview() {
-  cameFrom = view; spared = new Set();
+let spared = new Set(), reviewScope = null;
+const reviewItems = () => binned().filter(p => !reviewScope || reviewScope.filter(p));
+// Opened from "Review bin" (scope = null, whole bin) or automatically when a set is finished.
+function openReview(scope = null) {
+  if (view !== "review") cameFrom = view;
+  spared = new Set(); reviewScope = scope;
   const g = $("#grid"); g.innerHTML = "";
-  for (const p of binned()) {
+  for (const p of reviewItems()) {
     const t = document.createElement("div"); t.className = "tile"; t.title = p.name;
     if (p.kind === "video") t.innerHTML = `<div class="vid">▶ video<br>${p.name}</div>`; else t.append(mediaEl(p, false));
     t.insertAdjacentHTML("beforeend", `${p.dated ? "" : `<span class="warn">no date</span>`}<div class="x">✕</div>`);
@@ -420,34 +429,73 @@ function openReview() {
   updateReview(); show("review");
 }
 function updateReview() {
-  const n = binned().filter(p => !spared.has(p.key)).length;
-  $("#reviewTitle").textContent = `Review bin: ${n} to delete`;
+  const all = reviewItems(), n = all.filter(p => !spared.has(p.key)).length;
+  const verb = platform === "mac" ? "to send to the delete album" : "to delete";
+  $("#reviewTitle").textContent = reviewScope ? `${reviewScope.name} done! ${n} ${verb}` : `Review bin: ${n} ${verb}`;
   const b = $("#confirmDel"); b.textContent = `Delete ${n}`; b.disabled = !n;
+  const s = $("#spareAll"); s.textContent = spared.size === all.length && all.length ? "Bin them all again" : "Keep all";
+}
+function rerender() {
+  if (view === "swipe") renderSwipe(); else if (view === "dups") renderDups(); else if (view === "home") renderHome();
 }
 function closeReview() {
-  for (const name of spared) { state[name] = "keep"; post(name, "keep"); }
-  spared = new Set();
-  show(cameFrom);
-  if (cameFrom === "swipe") renderSwipe(); else if (cameFrom === "dups") renderDups(); else renderHome();
+  for (const k of spared) { state[k] = "keep"; post(k, "keep"); }
+  spared = new Set(); reviewScope = null;
+  show(cameFrom); rerender();
 }
-async function commit() {
-  const items = binned().filter(p => !spared.has(p.key)).map(p => ({ id: p.id, key: p.key }));
+
+// Deleting is never instant: after confirming, there's a countdown with an Undo button.
+// Nothing is sent to the server until the countdown ends. Closing the tab during it cancels.
+const UNDO_SECONDS = 10;
+let pending = null; // { items, keys:Set, timer, tick, left }
+function commit() {
+  const items = reviewItems().filter(p => !spared.has(p.key)).map(p => ({ id: p.id, key: p.key }));
   if (!items.length) return;
   const mac = platform === "mac";
   if (!confirm(mac
     ? `Add ${items.length} item(s) to the "${album}" album in Photos?\n\nThen open that album in Photos, press ⌘A and ⌘⌫ to delete them.`
-    : `Delete ${items.length} item(s)?\n\nThey go to the Recycle Bin and are removed from iCloud on all your devices (recoverable from iCloud "Recently Deleted" for 30 days).`)) return;
-  const b = $("#confirmDel"); b.disabled = true; b.textContent = mac ? "Adding to album…" : "Deleting…";
-  const r = await fetch("/api/commit", { method: "POST", body: JSON.stringify({ items }) }).then(r => r.json());
+    : `Delete ${items.length} item(s)?\n\nThey go to the Recycle Bin and are removed from iCloud on all your devices (recoverable from iCloud "Recently Deleted" for 30 days).\n\nYou'll have ${UNDO_SECONDS} seconds to undo.`)) return;
+  if (pending) runPending(); // a previous countdown is still going: finish it first
+  pending = { items, keys: new Set(items.map(i => i.key)), left: UNDO_SECONDS };
+  closeReview();
+  showPendingToast();
+  pending.tick = setInterval(() => { pending.left--; showPendingToast(); }, 1000);
+  pending.timer = setTimeout(runPending, UNDO_SECONDS * 1000);
+}
+function showPendingToast() {
+  if (!pending) return;
+  const t = $("#toast"); clearTimeout(toast.h);
+  t.innerHTML = `${platform === "mac" ? "Sending" : "Deleting"} ${pending.items.length} in ${Math.max(0, pending.left)}s
+    <button id="toastUndo">Undo</button>`;
+  t.style.display = "flex";
+  $("#toastUndo").onclick = cancelPending;
+}
+function cancelPending() {
+  if (!pending) return;
+  clearTimeout(pending.timer); clearInterval(pending.tick);
+  pending = null; rerender();
+  toast("Cancelled. Nothing was deleted, and those photos are still in the bin.", 4000);
+}
+async function runPending() {
+  if (!pending) return;
+  const job = pending; pending = null;
+  clearTimeout(job.timer); clearInterval(job.tick);
+  const mac = platform === "mac";
+  toast(mac ? "Adding to album…" : "Deleting…", 60000);
+  let r;
+  try { r = await fetch("/api/commit", { method: "POST", body: JSON.stringify({ items: job.items }) }).then(r => r.json()); }
+  catch { toast("Couldn't reach SwipeWipe. Nothing was deleted.", 5000); rerender(); return; }
   const done = new Set(r.done);
   const doneKeys = new Set(photos.filter(p => done.has(p.id)).map(p => p.key));
   if (mac) for (const k of doneKeys) state[k] = "sent";
   else { photos = photos.filter(p => !done.has(p.id)); for (const k of doneKeys) delete state[k]; }
   undoStack = undoStack.filter(k => !doneKeys.has(k));
-  closeReview();
-  toast((mac ? `Added ${r.done.length} to “${album}” in Photos. Delete them there.` : `Deleted ${r.done.length}`) +
-    (r.failed.length ? ` · ${r.failed.length} failed (still in bin)` : ""), 6000);
+  rerender();
+  toast((mac ? `Added ${r.done.length} to “${album}” in Photos. Delete them there.`
+    : `Deleted ${r.done.length}. Restore from iCloud “Recently Deleted” within 30 days if needed.`) +
+    (r.failed.length ? ` · ${r.failed.length} failed (still in bin)` : ""), 7000);
 }
+window.addEventListener("beforeunload", e => { if (pending) { e.preventDefault(); e.returnValue = ""; } });
 
 // ---------- wiring ----------
 function goHome() { show("home"); renderHome(); }
@@ -455,12 +503,20 @@ $("#back").onclick = goHome; $("#dupBack").onclick = goHome;
 $("#btnDel").onclick = () => decide("delete");
 $("#btnKeep").onclick = () => decide("keep");
 $("#btnUndo").onclick = undo;
-$("#reviewBtn").onclick = openReview; $("#homeBin").onclick = openReview; $("#dupReview").onclick = openReview;
+for (const id of ["#reviewBtn", "#homeBin", "#dupReview"]) $(id).onclick = () => openReview();
 $("#closeReview").onclick = closeReview;
+$("#spareAll").onclick = () => {
+  const all = reviewItems(), allSpared = spared.size === all.length;
+  spared = allSpared ? new Set() : new Set(all.map(p => p.key));
+  document.querySelectorAll("#grid .tile").forEach((t, i) => {
+    const on = spared.has(all[i].key); t.classList.toggle("spared", on); t.querySelector(".x").textContent = on ? "♥" : "✕"; });
+  updateReview();
+};
 $("#confirmDel").onclick = commit;
 // capture phase so focused buttons/inputs can never swallow the arrow keys
 window.addEventListener("keydown", e => {
   if (e.key === "Escape") { if (view === "review") closeReview(); else if (view !== "home") goHome(); return; }
+  if (pending && (e.key === "z" || e.key === "Z")) { e.preventDefault(); cancelPending(); return; } // undo the delete first
   if (view !== "swipe" || e.ctrlKey || e.altKey || e.metaKey) return;
   if (e.key === "ArrowLeft") { e.preventDefault(); decide("delete"); }
   else if (e.key === "ArrowRight") { e.preventDefault(); decide("keep"); }

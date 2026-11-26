@@ -127,6 +127,12 @@
   .note { color: var(--muted); font-size: 12.5px; padding: 10px 18px 0; }
   #toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); background: #26262d; color: #fff; border: 1px solid var(--line);
     padding: 10px 16px; border-radius: 10px; display: none; z-index: 20; align-items: center; gap: 14px; max-width: 92vw; }
+  #modal { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: none; place-items: center; z-index: 40; padding: 16px; }
+  #modal .box { background: #1d1d23; color: var(--text); border: 1px solid var(--line); border-radius: 14px; padding: 20px 22px; max-width: 440px; width: 100%; }
+  #modal h3 { margin: 0 0 8px; font-size: 18px; }
+  #modal p { margin: 0 0 18px; color: #b8b8c2; font-size: 13.5px; line-height: 1.5; }
+  #modal .row { display: flex; justify-content: flex-end; gap: 10px; }
+  #modal .btn { padding: 8px 16px; }
   #toast button { background: #fff; color: #111; border: 0; border-radius: 7px; padding: 6px 14px; font-weight: 700; }
   #loadingAll { display: grid; place-items: center; height: 100%; font-weight: 700; font-size: 18px; }
 </style>
@@ -196,6 +202,12 @@
   <div id="grid"></div>
 </section>
 <div id="toast"></div>
+<div id="modal" role="dialog" aria-modal="true">
+  <div class="box">
+    <h3></h3><p></p>
+    <div class="row"><button class="btn cancel">Cancel</button><button class="btn solid ok"></button></div>
+  </div>
+</div>
 <div id="offline" role="alert" style="display:none;position:fixed;top:0;left:0;right:0;z-index:30;background:#b3261e;color:#fff;font-weight:600;padding:10px 18px;text-align:center"></div>
 
 <script>
@@ -458,9 +470,10 @@ function renderDups() {
     list.append(el);
   }
 }
-$("#dupAuto").onclick = () => {
+$("#dupAuto").onclick = async () => {
   const gs = dupGroups().filter(g => !g.resolved);
-  if (!confirm(`Mark the extra copy in ${gs.length} groups for the bin (keeping the copy without "(1)" in its name)?\n\nNothing is deleted until you confirm in Review bin.`)) return;
+  if (!(await ask(`Bin the extra copy in ${gs.length} groups?`,
+    `Keeps the copy without “(1)” in its name. Nothing is deleted until you confirm in Review bin.`, "Bin extras"))) return;
   for (const g of gs) g.items.forEach((p, i) => { if (!state[p.key]) { state[p.key] = i === 0 ? "keep" : "delete"; post(p.key, state[p.key]); } });
   renderDups();
 };
@@ -503,13 +516,34 @@ function closeReview() {
 // Nothing is sent to the server until the countdown ends. Closing the tab during it cancels.
 const UNDO_SECONDS = 10;
 let pending = null; // { items, keys:Set, timer, tick, left }
-function commit() {
+// In-page confirm dialog. (Browser confirm() pop-ups are blocked in some embedded
+// browsers and silently return false, which made Delete do nothing.)
+function ask(title, body, okLabel) {
+  return new Promise(resolve => {
+    const m = $("#modal");
+    m.querySelector("h3").textContent = title;
+    m.querySelector("p").textContent = body;
+    const ok = m.querySelector(".ok"), cancel = m.querySelector(".cancel");
+    ok.textContent = okLabel;
+    m.style.display = "grid";
+    cancel.focus(); // Enter on its own never deletes
+    const done = v => { m.style.display = "none"; ok.onclick = cancel.onclick = m.onclick = ask.esc = null; resolve(v); };
+    ok.onclick = () => done(true);
+    cancel.onclick = () => done(false);
+    m.onclick = e => { if (e.target === m) done(false); };
+    ask.esc = () => done(false);
+  });
+}
+async function commit() {
   const items = reviewItems().filter(p => !spared.has(p.key)).map(p => ({ id: p.id, key: p.key }));
   if (!items.length) return;
   const mac = platform === "mac";
-  if (!confirm(mac
-    ? `Add ${items.length} item(s) to the "${album}" album in Photos?\n\nThen open that album in Photos, press ⌘A and ⌘⌫ to delete them.`
-    : `Delete ${items.length} item(s)?\n\nThey go to the Recycle Bin and are removed from iCloud on all your devices (recoverable from iCloud "Recently Deleted" for 30 days).\n\nYou'll have ${UNDO_SECONDS} seconds to undo.`)) return;
+  const n = items.length, s = n === 1 ? "" : "s";
+  if (!(await (mac
+    ? ask(`Send ${n} item${s} to the “${album}” album?`,
+        `Then open that album in Photos and press ⌘A, then ⌘⌫ to delete them.`, `Send ${n}`)
+    : ask(`Delete ${n} item${s}?`,
+        `They go to the Recycle Bin and are removed from iCloud on all your devices. You can restore them from iCloud “Recently Deleted” for 30 days, and you'll have ${UNDO_SECONDS} seconds to undo here.`, `Delete ${n}`)))) return;
   if (pending) runPending(); // a previous countdown is still going: finish it first
   pending = { items, keys: new Set(items.map(i => i.key)), left: UNDO_SECONDS };
   closeReview();
@@ -570,6 +604,7 @@ $("#spareAll").onclick = () => {
 $("#confirmDel").onclick = commit;
 // capture phase so focused buttons/inputs can never swallow the arrow keys
 window.addEventListener("keydown", e => {
+  if (ask.esc) { if (e.key === "Escape") { e.preventDefault(); ask.esc(); } return; } // dialog open: keys go to it only
   if (e.key === "Escape") { if (view === "review") closeReview(); else if (view !== "home") goHome(); return; }
   if (pending && (e.key === "z" || e.key === "Z")) { e.preventDefault(); cancelPending(); return; } // undo the delete first
   if (view !== "swipe" || e.ctrlKey || e.altKey || e.metaKey) return;

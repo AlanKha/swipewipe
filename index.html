@@ -80,7 +80,9 @@
   .card .loading, .card .err { color: var(--muted); padding: 20px; text-align: center; }
   /* thumbnail placeholder sits behind the full photo, which covers it once loaded */
   .card img.ph { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; z-index: 0; }
-  .card > img:not(.ph), .card > video { position: relative; z-index: 1; }
+  /* fill the card and scale to fit inside it; a grid item's max-height:100% doesn't
+     limit a video, so tall/large videos used to overflow and get cropped */
+  .card > img:not(.ph), .card > video { position: absolute; inset: 0; width: 100%; height: 100%; max-width: none; max-height: none; object-fit: contain; z-index: 1; }
   .card .loading.over { position: absolute; bottom: 52px; left: 50%; transform: translateX(-50%); z-index: 2; padding: 4px 10px;
     background: rgba(0,0,0,.6); color: #ddd; border-radius: 6px; font-size: 12px; white-space: nowrap; }
   .card .stamp, .card .tags, .card .meta { z-index: 3; }

@@ -456,14 +456,17 @@ class Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         body = self.read_json()
         if u.path == "/api/decide":
-            key, d = body.get("key"), body.get("decision")
-            if not isinstance(key, str):
-                return self.send_json({"ok": False}, 400)
-            if key.startswith("@"):
-                val = "1" if d == "1" else None
-            else:
-                val = d if d in ("keep", "delete") else None
-            update_state({key: val})
+            # {"key", "decision"} or a batch: {"changes": [{"key", "decision"}, ...]} (applied in order)
+            changes = {}
+            for c in body.get("changes") or [body]:
+                key, d = c.get("key"), c.get("decision")
+                if not isinstance(key, str):
+                    return self.send_json({"ok": False}, 400)
+                if key.startswith("@"):
+                    changes[key] = "1" if d == "1" else None
+                else:
+                    changes[key] = d if d in ("keep", "delete") else None
+            update_state(changes)
             return self.send_json({"ok": True})
         if u.path == "/api/commit":
             # body.items: [{id, key}] - only items still marked "delete" are touched

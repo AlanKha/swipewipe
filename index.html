@@ -94,13 +94,33 @@
   .hint { flex: none; text-align: center; color: var(--muted); font-size: 12px; padding-bottom: 10px; }
 
   /* ---------- duplicates ---------- */
-  .warnbox { margin: 14px 18px 0; padding: 12px 14px; border-radius: 10px; background: #2b2410; border: 1px solid #5c4a14; color: #f1dc9a; font-size: 13px; }
-  #dupList { flex: 1; overflow: auto; padding: 14px 18px 30px; display: grid; gap: 12px;
+  #dupScroll { flex: 1; overflow: auto; }
+  .dupintro { display: flex; gap: 24px; padding: 18px; flex-wrap: wrap; align-items: center; border-bottom: 1px solid var(--line); }
+  .dupintro .explain { flex: 1 1 420px; font-size: 13.5px; color: #c6c6cf; }
+  .dupintro h3 { margin: 0 0 6px; color: var(--text); font-size: 20px; }
+  .dupintro p { margin: 0 0 8px; line-height: 1.5; }
+  .dupintro code { background: #26262d; padding: 1px 5px; border-radius: 4px; }
+  .legend { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 12.5px; color: var(--muted); }
+  .lg { font-weight: 700; font-size: 11px; padding: 2px 7px; border-radius: 5px; margin-left: 6px; }
+  .lg.keep { background: var(--keep); color: #062; } .lg.delete { background: var(--del); color: #fff; }
+  .lg.sug { border: 2px dashed #888; color: #ccc; }
+  .bulk { flex: 0 1 300px; display: flex; flex-direction: column; gap: 8px; }
+  .btn.big { padding: 12px 18px; font-size: 15px; border-radius: 10px; }
+  .btn.big:disabled { background: var(--panel); border-color: var(--line); color: var(--muted); }
+  .bulk small { color: var(--muted); font-size: 12px; line-height: 1.4; }
+  .duptabs { display: flex; gap: 6px; padding: 12px 18px 0; }
+  .tab { background: transparent; color: var(--muted); border: 1px solid var(--line); border-radius: 99px; padding: 6px 14px; }
+  .tab.on { background: var(--text); color: var(--bg); border-color: var(--text); font-weight: 600; }
+  #dupList { padding: 14px 18px 30px; display: grid; gap: 12px;
     grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); align-content: start; }
   .group { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 10px; }
-  .group.resolved { opacity: .5; }
   .group .row { display: flex; gap: 8px; }
-  .group .gmeta { font-size: 12px; color: var(--muted); margin-bottom: 8px; display: flex; justify-content: space-between; }
+  .group .gmeta { font-size: 12px; color: var(--muted); margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .group .accept { font-size: 12px; padding: 3px 10px; }
+  .group .allgone { color: #ff9aa5; font-size: 12px; margin-top: 8px; }
+  .dtile.sug { border-style: dashed; }
+  .dtile.sug.keep { border-color: #2fd18b99; } .dtile.sug.delete { border-color: #ff4d5e99; }
+  .dtile.sug .st { opacity: .75; }
   .dtile { position: relative; flex: 1; aspect-ratio: 1; border-radius: 8px; overflow: hidden; background: #111;
     cursor: pointer; border: 3px solid transparent; }
   .dtile img { width: 100%; height: 100%; object-fit: cover; display: block; }
@@ -176,15 +196,29 @@
   <div class="topbar">
     <button class="btn" id="dupBack">← Home</button>
     <h2>Duplicates</h2>
-    <span class="stat" id="dupStat"></span>
     <span class="spacer"></span>
-    <button class="btn" id="dupAuto">Bin the extra copy in every unresolved group</button>
     <button class="btn red" id="dupReview" disabled>Review bin (0)</button>
   </div>
-  <div class="warnbox">Matched by identical file size and date taken. Click a copy to switch it between keep and bin.
-    <b>Check on your iPhone before deleting lots of these:</b> open Photos → Utilities → Duplicates. If your iPhone shows no duplicates,
-    these copies may be two local files for the <i>same</i> iCloud photo, and deleting one could delete the photo itself. Try one pair first.</div>
-  <div id="dupList"></div>
+  <div id="dupScroll">
+    <div class="dupintro">
+      <div class="explain">
+        <h3 id="dupHeadline"></h3>
+        <p>Each set is photos with the <b>exact same file size and date taken</b>. These usually come from re-imports
+          such as a Google Photos migration, which leave a copy named like <code>IMG_1234(1).JPG</code> next to the original.</p>
+        <p>In every set SwipeWipe suggests keeping the original (the name without “(1)”) and binning the copies.
+          Click any photo to switch it. Nothing is deleted here: binned photos go to <b>Review bin</b> first.</p>
+        <div class="legend"><span class="lg keep">KEEP</span> stays
+          <span class="lg delete">BIN</span> goes to the bin
+          <span class="lg sug">dashed</span> = suggestion you haven't confirmed yet</div>
+      </div>
+      <div class="bulk">
+        <button class="btn solid big" id="dupAuto"></button>
+        <small id="dupAutoNote">Keeps every original. You'll see all the copies in Review bin before anything is deleted.</small>
+      </div>
+    </div>
+    <div class="duptabs"><button class="tab on" data-tab="todo" id="tabTodo"></button><button class="tab" data-tab="done" id="tabDone"></button></div>
+    <div id="dupList"></div>
+  </div>
 </section>
 
 <!-- REVIEW -->
@@ -228,10 +262,11 @@ function post(key, decision) { outbox.push({ key, decision }); saveOutbox(); flu
 async function flush() {
   if (flushing) return; flushing = true;
   try {
-    while (outbox.length) {
-      const r = await fetch("/api/decide", { method: "POST", body: JSON.stringify(outbox[0]) });
+    while (outbox.length) { // send everything queued in one request
+      const batch = outbox.slice(0, 2000);
+      const r = await fetch("/api/decide", { method: "POST", body: JSON.stringify({ changes: batch }) });
       if (!r.ok) throw new Error(r.status);
-      outbox.shift(); saveOutbox();
+      outbox.splice(0, batch.length); saveOutbox();
     }
     if (!(await fetch("/api/ping")).ok) throw new Error("ping");
     setOffline(false);
@@ -449,33 +484,62 @@ function dupGroups() {
     return { items: g, resolved: g.every(p => state[p.key]) };
   }).sort((a, b) => a.resolved - b.resolved || b.items[0].mtime - a.items[0].mtime);
 }
-function openDups() { show("dups"); renderDups(); }
+// Suggestion: keep the first (the original, sorted first by dupGroups), bin the rest.
+const suggested = (g, i) => (i === 0 ? "keep" : "delete");
+const effective = (g, p, i) => (state[p.key] === "keep" || state[p.key] === "delete") ? state[p.key] : suggested(g, i);
+let dupTab = "todo";
+const DUPS_SCOPE = { name: "Duplicates", filter: p => !!p.dup };
+function openDups() { dupTab = "todo"; show("dups"); renderDups(); }
+function setGroup(g, changes) { // decide every photo in the group, so the set counts as done
+  g.items.forEach((p, i) => { const v = changes[p.key] || effective(g, p, i); if (state[p.key] !== v) { state[p.key] = v; post(p.key, v); } });
+}
 function renderDups() {
-  const gs = dupGroups(), unresolved = gs.filter(g => !g.resolved).length;
-  $("#dupStat").textContent = `${unresolved} unresolved of ${gs.length} groups`;
-  $("#dupAuto").disabled = !unresolved;
+  const gs = dupGroups(), todo = gs.filter(g => !g.resolved), done = gs.filter(g => g.resolved);
+  const extra = todo.flatMap(g => g.items.filter((p, i) => effective(g, p, i) === "delete" && !state[p.key]));
+  $("#dupHeadline").textContent = gs.length
+    ? `${gs.length} sets of identical copies` + (todo.length ? `, ${todo.length} still to sort` : ". All sorted ✓")
+    : "No duplicates found";
+  const auto = $("#dupAuto");
+  auto.disabled = !extra.length;
+  auto.textContent = extra.length ? `Bin all ${extra.length} extra copies (≈ ${fmtSize(extra.reduce((a, p) => a + p.size, 0))})` : "Nothing left to bin";
   const bin = binned(), rb = $("#dupReview"); rb.disabled = !bin.length; rb.textContent = `Review bin (${bin.length})`;
+  $("#tabTodo").textContent = `To sort (${todo.length})`; $("#tabDone").textContent = `Sorted (${done.length})`;
+  document.querySelectorAll(".duptabs .tab").forEach(t => t.classList.toggle("on", t.dataset.tab === dupTab));
   const list = $("#dupList"); list.innerHTML = "";
-  for (const g of gs) {
-    const el = document.createElement("div"); el.className = "group" + (g.resolved ? " resolved" : "");
-    el.innerHTML = `<div class="gmeta"><span>${fmtDate(g.items[0])} · ${fmtSize(g.items[0].size)}</span><span>${g.items.length} copies</span></div><div class="row"></div>`;
-    for (const p of g.items) {
-      const st = state[p.key] || "none";
-      const t = document.createElement("div"); t.className = "dtile " + st; t.title = p.name;
+  const shown = dupTab === "todo" ? todo : done;
+  if (!shown.length) list.innerHTML = `<div class="empty">${dupTab === "todo" ? "Nothing left to sort." : "Nothing sorted yet."}</div>`;
+  for (const g of shown) {
+    const el = document.createElement("div"); el.className = "group";
+    el.innerHTML = `<div class="gmeta"><span>${fmtDate(g.items[0])} · ${fmtSize(g.items[0].size)} each · ${g.items.length} copies</span>
+      ${g.resolved ? "" : `<button class="btn accept">Accept</button>`}</div><div class="row"></div>`;
+    g.items.forEach((p, i) => {
+      const eff = effective(g, p, i), decided = !!state[p.key];
+      const t = document.createElement("div"); t.className = `dtile ${eff}${decided ? "" : " sug"}`; t.title = p.name + " · click to switch";
       if (p.kind === "video") t.innerHTML = `<div class="vid">▶ video</div>`; else t.append(mediaEl(p, false));
-      t.insertAdjacentHTML("beforeend", `<span class="st">${st === "keep" ? "KEEP" : st === "delete" ? "BIN" : "?"}</span><span class="lbl">${p.name}</span>`);
-      t.onclick = () => { const next = state[p.key] === "delete" ? "keep" : "delete"; state[p.key] = next; post(p.key, next); renderDups(); };
+      t.insertAdjacentHTML("beforeend", `<span class="st">${eff === "keep" ? "KEEP" : "BIN"}</span><span class="lbl">${i === 0 ? "original · " : ""}${p.name}</span>`);
+      t.onclick = () => { setGroup(g, { [p.key]: eff === "keep" ? "delete" : "keep" }); renderDups(); };
       el.querySelector(".row").append(t);
-    }
+    });
+    if (g.items.every((p, i) => effective(g, p, i) === "delete"))
+      el.insertAdjacentHTML("beforeend", `<div class="allgone">Every copy is binned, so this photo would be gone completely.</div>`);
+    el.querySelector(".accept")?.addEventListener("click", () => { setGroup(g, {}); renderDups(); });
     list.append(el);
   }
 }
+document.querySelectorAll(".duptabs .tab").forEach(t => t.onclick = () => { dupTab = t.dataset.tab; renderDups(); });
 $("#dupAuto").onclick = async () => {
-  const gs = dupGroups().filter(g => !g.resolved);
-  if (!(await ask(`Bin the extra copy in ${gs.length} groups?`,
-    `Keeps the copy without “(1)” in its name. Nothing is deleted until you confirm in Review bin.`, "Bin extras"))) return;
-  for (const g of gs) g.items.forEach((p, i) => { if (!state[p.key]) { state[p.key] = i === 0 ? "keep" : "delete"; post(p.key, state[p.key]); } });
+  const todo = dupGroups().filter(g => !g.resolved);
+  const n = todo.reduce((a, g) => a + g.items.filter((p, i) => effective(g, p, i) === "delete" && !state[p.key]).length, 0);
+  // sets where you already binned the original while swiping: binning the copy too removes the photo entirely
+  const gone = todo.filter(g => g.items.every((p, i) => effective(g, p, i) === "delete")).length;
+  if (!(await ask(`Bin ${n} extra copies?`,
+    (gone ? `In ${gone} set${gone > 1 ? "s" : ""} you already binned the original while swiping, so ${gone > 1 ? "those photos" : "that photo"} will be gone completely. ` +
+            `Everywhere else the original is kept. ` : `The original in each of the ${todo.length} sets is kept. `) +
+    `Next you'll see all the copies in Review bin, where you can still keep any of them. Nothing is deleted until you confirm there.`,
+    `Bin ${n} copies`))) return;
+  for (const g of todo) setGroup(g, {});
   renderDups();
+  openReview(DUPS_SCOPE);
 };
 
 // ---------- review ----------
@@ -499,7 +563,8 @@ function openReview(scope = null) {
 function updateReview() {
   const all = reviewItems(), n = all.filter(p => !spared.has(p.key)).length;
   const verb = platform === "mac" ? "to send to the delete album" : "to delete";
-  $("#reviewTitle").textContent = reviewScope ? `${reviewScope.name} done! ${n} ${verb}` : `Review bin: ${n} ${verb}`;
+  $("#reviewTitle").textContent = !reviewScope ? `Review bin: ${n} ${verb}`
+    : reviewScope === DUPS_SCOPE ? `Duplicate copies: ${n} ${verb}` : `${reviewScope.name} done! ${n} ${verb}`;
   const b = $("#confirmDel"); b.textContent = `Delete ${n}`; b.disabled = !n;
   const s = $("#spareAll"); s.textContent = spared.size === all.length && all.length ? "Bin them all again" : "Keep all";
 }

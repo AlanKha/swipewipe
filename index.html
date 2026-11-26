@@ -437,7 +437,26 @@ function renderSwipe() {
   }
   if (q[1]) stack.append(makeCard(q[1], true));
   const top = makeCard(q[0], false); stack.append(top); attachDrag(top);
-  for (const p of q.slice(2, 4)) if (p.kind === "image") mediaEl(p, true); // preload
+  preload(q);
+}
+// Two layers of preloading:
+//  1. the server downloads (from iCloud) and converts the next PREFETCH_AHEAD photos in the background
+//  2. the browser fetches and decodes the next BROWSER_AHEAD images so they appear instantly
+const PREFETCH_AHEAD = 15, BROWSER_AHEAD = 4;
+let lastPrefetch = "", warm = new Map();
+function preload(q) {
+  const ids = q.slice(0, PREFETCH_AHEAD).map(p => p.id), sig = ids.join("|");
+  if (sig !== lastPrefetch) {
+    lastPrefetch = sig;
+    fetch("/api/prefetch", { method: "POST", body: JSON.stringify({ ids }) }).catch(() => {});
+  }
+  const keep = new Map();
+  for (const p of q.slice(2, 2 + BROWSER_AHEAD)) { // 0 and 1 are already on screen
+    if (p.kind !== "image") continue;
+    const img = warm.get(p.id) || mediaEl(p, true);
+    keep.set(p.id, img); // holding a reference keeps the decoded image around
+  }
+  warm = keep;
 }
 function attachDrag(card) {
   let sx = 0, sy = 0, dx = 0, dragging = false;

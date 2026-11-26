@@ -318,6 +318,63 @@ class MacLibrary:
 LIB = None
 
 
+# ---- background prefetch -----------------------------------------------------
+# Cloud-only photos take ~1s to download from iCloud (HEIC ~4s with conversion).
+# The page tells us which photos come next; we download/convert them in the
+# background so they're on disk by the time you get there.
+class Prefetcher:
+    WORKERS = 4
+    MAX_VIDEO = 200 * 1024 * 1024  # don't pull huge videos ahead of time
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.queue = []          # ids in the order they'll be shown
+        self.done, self.busy = set(), set()
+        self.wake = threading.Condition(self.lock)
+        for _ in range(self.WORKERS):
+            threading.Thread(target=self.worker, daemon=True).start()
+
+    def want(self, ids):
+        """Replace the wish list (photos no longer upcoming are dropped)."""
+        with self.lock:
+            self.queue = [i for i in ids if i not in self.done and i not in self.busy]
+            self.wake.notify_all()
+
+    def worker(self):
+        while True:
+            with self.lock:
+                while not self.queue:
+                    self.wake.wait()
+                pid = self.queue.pop(0)
+                self.busy.add(pid)
+            ok = False
+            try:
+                ok = self.fetch(pid)
+            except Exception as e:
+                print(f"prefetch {pid}: {e}")
+            with self.lock:
+                self.busy.discard(pid)
+                if ok:
+                    self.done.add(pid)
+
+    def fetch(self, pid):
+        path = LIB.path(pid)
+        if not path:
+            return False
+        ext = os.path.splitext(path)[1].lower()
+        if ext in VIDEO_EXT and os.path.getsize(path) > self.MAX_VIDEO:
+            return False
+        with open(path, "rb") as f:  # reading the file makes iCloud download it
+            while f.read(1 << 20):
+                pass
+        if ext in IMAGE_EXT and ext not in RAW_OK and (HAVE_PIL or IS_MAC or ext in (".heic", ".heif")):
+            rendered(path, 1800)  # same conversion the card view uses, now cached
+        return True
+
+
+PREFETCH = None
+
+
 # ---- image rendering ---------------------------------------------------------
 def rendered(path, max_px):
     """Cached JPEG bytes of the image, upright and downscaled."""
@@ -327,7 +384,10 @@ def rendered(path, max_px):
     if not os.path.exists(cp):
         ext = os.path.splitext(path)[1].lower()
         if ext in (".heic", ".heif") or not HAVE_PIL:
-            LIB.heic_to_jpeg(path, cp, max_px)  # Windows WIC / macOS sips
+            # write to a temp name first: the prefetcher and a request may convert at the same time
+            tmp = f"{cp}.{threading.get_ident()}.jpg"
+            LIB.heic_to_jpeg(path, tmp, max_px)  # Windows WIC / macOS sips
+            os.replace(tmp, cp)
         else:
             with Image.open(path) as im:
                 im = ImageOps.exif_transpose(im)
@@ -341,8 +401,10 @@ def rendered(path, max_px):
                 im.thumbnail((max_px, max_px))
                 buf = io.BytesIO()
                 im.save(buf, "JPEG", quality=85)
-            with open(cp, "wb") as f:
+            tmp = f"{cp}.{threading.get_ident()}.tmp"
+            with open(tmp, "wb") as f:
                 f.write(buf.getvalue())
+            os.replace(tmp, cp)
     with open(cp, "rb") as f:
         return f.read()
 
@@ -432,6 +494,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", ctype)
         self.send_header("Accept-Ranges", "bytes")
+        if ext in IMAGE_EXT:  # lets the browser reuse images it preloaded
+            self.send_header("Cache-Control", "max-age=86400")
         for k, v in (extra or {}).items():
             self.send_header(k, v)
         self.send_header("Content-Length", str(end - start + 1))
@@ -468,6 +532,10 @@ class Handler(BaseHTTPRequestHandler):
                     changes[key] = d if d in ("keep", "delete") else None
             update_state(changes)
             return self.send_json({"ok": True})
+        if u.path == "/api/prefetch":
+            ids = [i for i in body.get("ids", []) if isinstance(i, str)][:50]
+            PREFETCH.want(ids)
+            return self.send_json({"ok": True})
         if u.path == "/api/commit":
             # body.items: [{id, key}] - only items still marked "delete" are touched
             st = read_state()
@@ -483,7 +551,8 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    global LIB
+    global LIB, PREFETCH
+    PREFETCH = Prefetcher()
     if IS_WIN:
         LIB = WindowsLibrary()
     elif IS_MAC:
